@@ -1,0 +1,41 @@
+name: CI
+
+# 触发面刻意收窄：只跑 PR 与主干推送，不跑所有分支，避免为临时分支白烧机器
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# 同一分支的新提交取消上一次运行，避免排队
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # 与根 package.json 的 packageManager 保持一致
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # 用 frozen 模式：lockfile 与 package.json 不一致时直接失败，而不是悄悄改依赖
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # 三个 app + shared 全量类型检查（根 typecheck 之前只覆盖 shared，等于没查业务代码）
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # 纯逻辑 + 静态契约验收：不连数据库、不启服务，秒级完成
+      - name: Verify (logic + contract)
+        run: pnpm verify

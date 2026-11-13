@@ -1,0 +1,38 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# 环境变量：真实密钥绝不入库；示例与 mock 配置保留
+.env
+.env.*
+!.env.example
+!.env.production.example
+!.env.mock
+
+# 部署打包产物（由 deploy/pack.sh 生成，每次上传前重新生成）
+photo-club-deploy.tar.gz
+.pack/
+.pack-staging/
+deploy/context/
+deploy/public/web/
+deploy/public/admin/
+deploy/backups/
+deploy/.env.production
+
+# 运行时数据（本地上传的图片，不入库）
+data/
+apps/server/data/
+
+# 开发期截图与流水线产物（可由源码与脚本重新生成）
+.shots/
+.walkthrough/
+output/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+*.log

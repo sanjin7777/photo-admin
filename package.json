@@ -1,0 +1,22 @@
+{
+  "name": "photo-club",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "typecheck": "pnpm -r --parallel typecheck",
+    "verify": "node scripts/verify.mjs",
+    "verify:routes": "pnpm --filter @photo/server exec tsx --tsconfig tsconfig.json ../../scripts/verify-routes.ts",
+    "dev:server": "pnpm --filter @photo/server dev",
+    "dev:web": "pnpm --filter @photo/web dev",
+    "dev:admin": "pnpm --filter @photo/admin dev",
+    "dev:web:mock": "pnpm --filter @photo/web dev:mock",
+    "dev:admin:mock": "pnpm --filter @photo/admin dev:mock"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

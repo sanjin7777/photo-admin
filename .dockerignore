@@ -1,0 +1,10 @@
+# Dockerfile.server 的构建上下文是仓库根目录，排除无关大目录以加快上传/构建
+**/node_modules
+**/dist
+**/*.log
+.git
+.workbuddy
+apps/web
+apps/admin
+scripts
+deploy/public

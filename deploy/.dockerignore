@@ -1,0 +1,7 @@
+# 构建上下文是 deploy 目录自身；排除运行时产物与本机密钥
+public
+*.tar.gz
+*.zip
+.env.production
+context/**/node_modules
+context/**/dist

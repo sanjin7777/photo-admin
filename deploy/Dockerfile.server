@@ -1,0 +1,28 @@
+# 构建上下文为 deploy 目录自身（部署包已自包含，无需上传整个仓库）。
+# 源码快照位于 context/，只 COPY 源码与 package.json，不含 node_modules / dist。
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY context/tsconfig.base.json /app/tsconfig.base.json
+
+COPY context/packages/shared/package.json /app/packages/shared/package.json
+COPY context/packages/shared/tsconfig.json /app/packages/shared/tsconfig.json
+COPY context/packages/shared/src /app/packages/shared/src
+
+COPY context/apps/server/package.json /app/apps/server/package.json
+COPY context/apps/server/tsconfig.json /app/apps/server/tsconfig.json
+COPY context/apps/server/src /app/apps/server/src
+
+# shared 源码通过 tsconfig paths 被后端直接引用，Node 按文件位置解析依赖，
+# 因此必须在 /app/packages/shared 也安装一份依赖（否则 zod 找不到）。
+# 迁移脚本与种子数据位于 src/migrations、src/seeds，已随 src 一并复制。
+WORKDIR /app/packages/shared
+RUN npm install --no-audit --no-fund
+
+WORKDIR /app/apps/server
+RUN npm install --no-audit --no-fund
+
+EXPOSE 3000
+WORKDIR /app/apps/server
+CMD ["node", "node_modules/tsx/dist/cli.mjs", "--tsconfig", "tsconfig.json", "src/main.ts"]

@@ -1,0 +1,24 @@
+# 统一换行符：仓库里一律存 LF。
+# 这套代码最终跑在 Linux 服务器上（deploy/*.sh 直接由 bash 执行），
+# 若被 Windows 的 CRLF 污染，会出现 `\r: command not found` 这类难查的错误。
+* text=auto eol=lf
+
+# 必须保持 LF 的可执行脚本
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# 二进制资源：不做换行符转换，也不做文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.gz binary
+*.zip binary
+*.docx binary
+*.xlsx binary
+*.pdf binary

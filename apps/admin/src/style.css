@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #app { min-height: 100%; }
+body { @apply bg-slate-100 text-slate-900 antialiased; }
+.card { @apply rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200; }
+.tap { min-height: 44px; min-width: 44px; }
+/* 与前台同名工具类：表格标题/副标题统一单行截断，避免行高参差 */
+.clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Element Plus 表格在窄屏允许横向滚动，避免列挤压 */
+.table-scroll { overflow-x: auto; }
+.table-scroll .el-table { min-width: 720px; }
+
+/* ---- 弹窗：默认宽度由各页 min(XXXpx, 94vw) 控制，这里兜底并适配窄屏 ---- */
+.el-dialog { max-width: 94vw; }
+.el-dialog__body { padding: 16px 20px; }
+
+@media (max-width: 640px) {
+  /* 手机上别再用 8vh 的顶部留白，内容更容易一屏看完 */
+  .el-dialog {
+    margin-top: 3vh !important;
+    margin-bottom: 3vh;
+    border-radius: 12px;
+  }
+  .el-dialog__header { padding: 12px 14px 6px; }
+  .el-dialog__title { font-size: 15px; }
+  .el-dialog__body { padding: 10px 14px; }
+  .el-dialog__footer { padding: 6px 14px 14px; }
+  /* 底部按钮等宽铺满，避免两个小按钮挤在右侧 */
+  .el-dialog__footer > div { width: 100%; }
+  .el-dialog__footer .el-button { flex: 1 1 0; margin-left: 0 !important; }
+  /* 二次确认框同样收窄 */
+  .el-message-box { width: 88vw !important; max-width: 88vw; }
+}
