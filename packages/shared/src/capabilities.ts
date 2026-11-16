@@ -20,6 +20,11 @@ export const CAPABILITIES = [
   'balance:read:self',
   'vote:result:read',
   'vote:cast',
+  /**
+   * 查看「登记中的场次」都有谁登记了（仅昵称，不含微信号）。
+   * 属于社交向权益，只给 SVIP；不含任何可联系到本人的标识。
+   */
+  'event:participants:view',
   'model:self:write',
   'admin:event:write',
   'admin:model:write',
@@ -70,6 +75,7 @@ export const LEVEL_CAPABILITIES: Readonly<Record<MemberLevel, readonly Capabilit
     'event:svip:view',
     'vote:cast',
     'vote:result:read',
+    'event:participants:view',
   ],
 };
 
@@ -171,4 +177,9 @@ export function can(capabilities: ReadonlySet<string>, required: Capability): bo
 
 export function canAll(capabilities: ReadonlySet<string>, required: readonly Capability[]): boolean {
   return required.every((c) => capabilities.has(c));
+}
+
+/** 任一能力即可（OR 语义）：用于「多岗位共用一个读接口」的场景，如选人下拉 */
+export function canAny(capabilities: ReadonlySet<string>, required: readonly Capability[]): boolean {
+  return required.some((c) => capabilities.has(c));
 }

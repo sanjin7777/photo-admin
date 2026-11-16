@@ -82,7 +82,11 @@ export interface CouponFace {
 
 /**
  * 计算单席优惠金额（分）。
- * 与前端确认弹窗共用，避免「页面算出来 ¥134、服务端扣 ¥135」的预览偏差。
+ * 与前端确认弹窗、服务端结算共用同一实现，避免「页面算出来和实际扣减不一致」。
+ *
+ * ⚠️ `discountBp` 的语义是**实付比例**：8 折 = 8000bp = 实付 80%。
+ * 因此减免额 = 原价 ×(1 − bp/10000)，而不是 原价 × bp/10000
+ * （后者算出来的是折后价，曾导致 8 折券被当成「减 80%」，实收只有原价的 20%）。
  */
 export function couponDiscountOf(coupon: CouponFace, baseCent: number): number {
   const base = Math.max(0, Math.round(baseCent));
@@ -91,7 +95,8 @@ export function couponDiscountOf(coupon: CouponFace, baseCent: number): number {
     return Math.max(0, Math.min(base, Math.round(Number(coupon.amountCent ?? 0))));
   }
   const bp = Math.max(0, Math.min(10000, Math.round(Number(coupon.discountBp ?? 10000))));
-  const raw = Math.round((base * bp) / 10000);
+  // 先算减免额（原价 − 折后价），封顶作用于减免额本身
+  const raw = base - Math.round((base * bp) / 10000);
   const capped = coupon.maxDiscountCent == null
     ? raw
     : Math.min(raw, Math.max(0, Math.round(Number(coupon.maxDiscountCent))));

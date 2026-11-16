@@ -26,6 +26,10 @@ import type {
   VoteCampaignStatus,
 } from '../enums';
 import type { Cent, Id, ISODateTime, Paginated, RefundPolicy, Timestamps } from './common';
+/** 海报版式：由 schema 推导，避免在 DTO 里重复手写一套区块结构 */
+import type { PosterLayoutDto } from '../schemas/poster';
+// 转出去：DTO 里用到了它，消费方从 `@photo/shared/types` 取类型时无需再记一个路径
+export type { PosterLayoutDto } from '../schemas/poster';
 
 /* ---------------- 认证 / 用户 ---------------- */
 export interface UserDto extends Timestamps {
@@ -176,6 +180,14 @@ export interface ModelProfileDto extends Timestamps {
   socialAccounts: ModelSocialAccount[];
   portraitAuthStatus: PortraitAuthStatus;
   portraitAuthExpireAt: ISODateTime | null;
+  /**
+   * 身高/三围的「单独同意」留痕（敏感个人信息，PIPL 第 28–29 条）。
+   * null 表示尚未取得同意——此时不应在会员端展示身高与三围。
+   * 仅后台返回，前台不下发。
+   */
+  bodyDataConsentAt: ISODateTime | null;
+  /** 同意方式备注：口头 / 书面 / 线上 */
+  bodyDataConsentNote: string | null;
 }
 
 /* ---------------- 场次 ---------------- */
@@ -200,6 +212,11 @@ export interface EventSessionDto {
   capacityUsed: number;
   status: SessionStatus;
   sort: number;
+  /**
+   * NORMAL = 常规时段（按时间排期）；
+   * PROXY  = 代拍，独立于任何时段，每场次默认一个，价格与正常报名一致。
+   */
+  kind: 'NORMAL' | 'PROXY';
 }
 
 /** 分档价格；PUBLIC 即非会员价 */
@@ -207,6 +224,21 @@ export interface EventPriceDto {
   level: EventVisibility;
   priceCent: Cent;
   unitLabel: string;
+}
+
+/**
+ * 一位模特在某个场次里的「参赛信息」。
+ *
+ * 与 `ModelProfileDto` 的区别：profile 是模特档案（昵称、三围、照片库，跨场次共享），
+ * 这里是**本场次**的属性 —— 最主要的就是「这场穿什么」。
+ * 多模特场次里每位模特各有一套服装，必须在场次维度上分开存。
+ */
+export interface EventModelSlotDto {
+  modelId: Id;
+  /** 该模特在本场次使用的照片（通常 1 张）；空数组时前端回退到 event.posterUrls / 档案首图 */
+  photoUrls: string[];
+  /** 该模特在本场次的当日服装图；空数组时前端回退到 event.wardrobeUrls */
+  wardrobeUrls: string[];
 }
 
 export interface EventDto extends Timestamps {
@@ -230,8 +262,26 @@ export interface EventDto extends Timestamps {
   modelCount: number;
   allowProxyShoot: boolean;
   privateBookingNote: string | null;
+  /**
+   * 主模特（冗余字段，等于 models[0]）。
+   * 保留它是因为投票关联、海报主图、模特照片库等逻辑仍以「单人」为前提，
+   * 判断「有没有模特」时用它；展示"全部模特"时用 models。
+   */
   modelId: Id | null;
   model: ModelProfileDto | null;
+  /**
+   * 本场次参与的全部模特（含主模特，按 sort 排序）。
+   * 双模特场次会有 2 项；旧数据若关联表缺失，会回退成「只有 modelId 一个」。
+   */
+  models: ModelProfileDto[];
+  /**
+   * 按模特拆分的场次信息（服装图等），与 `models` 一一对应且顺序一致。
+   *
+   * 为什么单独一个字段而不塞进 `models`：`ModelProfileDto` 是模特**档案**，
+   * 跨场次共享；「这套衣服」是**本场次**的属性，混进去会污染档案语义
+   * （同一个模特在两个场次会拿到不同的 profile 快照）。
+   */
+  modelSlots: EventModelSlotDto[];
   /** 关联场景库（点4）；仅引用，场地展示仍用本场次自己的 venue/scene/venueUrls 快照 */
   sceneId: Id | null;
   registrationOpenAt: ISODateTime;
@@ -264,9 +314,81 @@ export interface EventAvailabilityDto {
   canRegister: boolean;
   /** 不可报名时的业务码，供前端做升级/充值引导 */
   reasonCode: number | null;
+  /**
+   * 当前用户的可用积分（分）。仅会员有账户；普通用户与未登录为 null。
+   * 下发给前端是为了在「积分不足」时能直接算出差额，而不是只说一句「积分不足」。
+   */
+  balanceCent: number | null;
+  /** 当前等级下本单需要支付的金额（分），与余额配合算差额 */
+  priceCent: number;
+  /**
+   * 逐时段的可报状态。
+   *
+   * `canRegister` 只表示「本场次还有任意一个时段可报」；
+   * 具体某个时段是否可选，必须看这里的 sessionId 对应项。
+   * 否则「第1场已满、第2场有位」时按钮会被整体禁用。
+   */
+  sessionChecks: Array<{
+    sessionId: Id;
+    canRegister: boolean;
+    reasonCode: number | null;
+  }>;
+  /**
+   * 该用户被回避名单拦下的时段 id。
+   *
+   * 只回 id 不回「被谁排除」：前端据此把时段标成「暂不可选」，
+   * 措辞中性、不暴露任何会员之间的关系。
+   */
+  restrictedSessionIds: Id[];
+}
+
+/* ---------------- 时段级回避名单（SVIP 择邻） ---------------- */
+/**
+ * 「某时段不接受某人报名」的一条规则。
+ *
+ * 语义上属于**发起人（owner）的个人偏好**，不是给被排除者打的标签：
+ * 解除容易，且完全不影响该用户报名其它时段。
+ */
+export interface SessionAvoidRuleDto {
+  id: Id;
+  sessionId: Id;
+  sessionLabel: string;
+  eventId: Id;
+  /** 为哪位会员设置；null 表示运营出于其它原因配置 */
+  ownerUserId: Id | null;
+  ownerNickname: string | null;
+  blockedUserId: Id;
+  blockedNickname: string;
+  blockedWechatId: string;
+  note: string | null;
+  createdBy: Id | null;
+  createdAt: ISODateTime;
 }
 
 export type EventPage = Paginated<EventDto>;
+
+/**
+ * 「登记中」场次的已登记名单（SVIP 专属）。
+ *
+ * 隐私边界：**只给昵称**，不下发微信号、用户 ID 或任何可反查到账号的字段。
+ * 目的是让会员知道这场有谁一起去，而不是提供联系方式。
+ */
+export interface SessionParticipantsDto {
+  sessionId: Id;
+  label: string;
+  /** 该时段有效登记总数（可能大于 nicknames.length，超出部分见 moreCount） */
+  count: number;
+  nicknames: string[];
+  /** 因超出单次返回上限而未列出的剩余人数 */
+  moreCount: number;
+}
+
+export interface EventParticipantsDto {
+  eventId: Id;
+  /** 该场次是否处于「登记中」（未开始且未取消）；false 时 sessions 为空 */
+  available: boolean;
+  sessions: SessionParticipantsDto[];
+}
 
 /* ---------------- 场景库（点4） ---------------- */
 /** 可复用的拍摄场地档案；新增场次时下拉选择，自动带出照片与信息 */
@@ -338,6 +460,11 @@ export interface RegistrationBatchDto {
   registrations: RegistrationDto[];
   /** 本次实际创建的名额数 */
   seats: number;
+  /**
+   * 非阻断性提示。目前只有后台手动录入会用到：
+   * 命中时段回避名单时仍按运营意愿录入，但要把情况回传给操作人。
+   */
+  warnings?: string[];
 }
 
 /* ---------------- 退款 ---------------- */
@@ -462,6 +589,11 @@ export interface AdminRegistrationLookupDto {
   /** 服务端按当前时间算出的有效等级 */
   level: MemberLevel;
   status: 'ACTIVE' | 'FROZEN';
+  /**
+   * 可用积分；无余额账户（普通用户）为 null。
+   * 下发它只是为了让手动录入弹窗能提前算「扣积分够不够」，避免提交后才报错。
+   */
+  availableCent: number | null;
 }
 
 /**
@@ -591,7 +723,7 @@ export interface PermissionLogDto extends AuditLogDto {
 export type AuditLogPage = Paginated<AuditLogDto>;
 
 /* ---------------- 后台列表查询 ---------------- */
-/** 场次海报配置：网站二维码 + 客服二维码 + 左上角标题 */
+/** 场次海报配置：网站二维码 + 客服二维码 + 左上角标题 + 自定义版式 */
 export interface PosterSettingsDto {
   /** 客服二维码：同源 /uploads 路径或 http(s) 绝对地址；null 表示尚未配置 */
   qrUrl: string | null;
@@ -599,6 +731,11 @@ export interface PosterSettingsDto {
   siteQrUrl: string | null;
   /** 海报左上角标题：null 表示使用内置默认标题 */
   brandTitle: string | null;
+  /**
+   * 设计器保存的版式；null 表示尚未自定义，导出时按所选预设渲染。
+   * 结构由 `@photo/shared` 的 `posterLayoutSchema` 定义。
+   */
+  layout: PosterLayoutDto | null;
 }
 
 /** 前台公开设置（无需登录），目前只有客服二维码 */

@@ -50,7 +50,7 @@ import { pool, withTransaction } from '../db/pool';
 import { effectiveLevel } from '../db/identity';
 import { claimIdempotency, completeIdempotency, requestHash, scopedIdempotencyKey } from '../db/idempotency';
 import { authenticate } from '../middleware/auth';
-import { requireCapabilities } from '../middleware/authorize';
+import { requireAnyCapability, requireCapabilities } from '../middleware/authorize';
 import { getIdentity, getTraceId } from '../middleware/context';
 import { asyncHandler } from '../middleware/error';
 import { validateBody, validateQuery } from '../middleware/validate';
@@ -107,8 +107,12 @@ async function createRegistration(
      * 同一时段的其它报名冲突检测。
      * 用户第一次提交时把冲突项回给前端做二次确认；确认后带 ignoreConflict=true 再来一次。
      * 只算仍然占位的状态：已确认/已签到；已取消、已退款、退款待审的不算。
+     *
+     * 代拍不参与时间冲突：代拍独立于常规时段，本来就是「不用亲自到场」，
+     * 因此既不该被常规报名挡住，也不该挡住别人的常规报名。
      */
-    if (!ignoreConflict) {
+    const isProxy = String((session as { kind?: string }).kind ?? 'NORMAL') === 'PROXY';
+    if (!ignoreConflict && !isProxy) {
       const [conflictRows] = await conn.execute<RowDataPacket[]>(
         `SELECT r.id AS registration_id, e.id AS event_id, e.title AS event_title,
                 s.label AS session_label, s.start_at, s.end_at
@@ -118,6 +122,7 @@ async function createRegistration(
           WHERE r.user_id = ?
             AND r.status IN ('CONFIRMED','CHECKED_IN')
             AND r.session_id <> ?
+            AND s.kind <> 'PROXY'
             AND s.start_at < ? AND s.end_at > ?`,
         [userId, sessionId, session.end_at, session.start_at],
       );
@@ -203,6 +208,7 @@ async function createRegistration(
       session: {
         status: session.status, startAt: isoTime(session.start_at), endAt: isoTime(session.end_at),
         capacity: Number(session.capacity), capacityUsed: Number(session.capacity_used),
+        kind: String((session as { kind?: string }).kind ?? 'NORMAL'),
       },
       level, priceCent, hasBalance: member, availableCent: available,
       payableCent: Math.max(0, priceCent - (discounts[0] ?? 0)),
@@ -225,17 +231,36 @@ async function createRegistration(
       throw new AppError(BIZ_CODES.BALANCE_INSUFFICIENT, '积分不足，请减少报名人数');
     }
 
-    const remaining = Number(session.capacity) - Number(session.capacity_used);
-    // 满员即拒（候补已下线）：先给出可读文案，真正的一致性仍靠下面的条件更新兜底
-    if (remaining < seats) {
-      throw new AppError(BIZ_CODES.EVENT_FULL, '剩余名额不足，请减少报名人数');
-    }
-    // 整批原子扣减；并发下扣减失败也直接报满员
-    const [cap] = await conn.execute<ResultSetHeader>(
-      'UPDATE event_sessions SET capacity_used = capacity_used + ? WHERE id = ? AND capacity_used + ? <= capacity',
-      [seats, sessionId, seats],
+    /**
+     * 时段级回避名单：该时段不接受本人报名。
+     * 文案刻意中性——不告诉用户「被某位会员排除」，只说这个时段不可选，
+     * 换一个时段就能正常报名。
+     */
+    const [avoidRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM session_avoid_rules WHERE session_id = ? AND blocked_user_id = ? AND revoked_at IS NULL LIMIT 1',
+      [sessionId, userId],
     );
-    if (cap.affectedRows !== 1) throw new AppError(BIZ_CODES.EVENT_FULL);
+    if (avoidRows[0]) throw new AppError(BIZ_CODES.SESSION_RESTRICTED);
+
+    /**
+     * 代拍不限人数：它不占用任何常规时段，摄影师按单量排期即可。
+     * 因此跳过容量校验与计数器累加，避免「代拍名额满了」这种没有意义的拦截。
+     */
+    const isProxySession = String((session as { kind?: string }).kind ?? 'NORMAL') === 'PROXY';
+
+    if (!isProxySession) {
+      const remaining = Number(session.capacity) - Number(session.capacity_used);
+      // 满员即拒（候补已下线）：先给出可读文案，真正的一致性仍靠下面的条件更新兜底
+      if (remaining < seats) {
+        throw new AppError(BIZ_CODES.EVENT_FULL, '剩余名额不足，请减少报名人数');
+      }
+      // 整批原子扣减；并发下扣减失败也直接报满员
+      const [cap] = await conn.execute<ResultSetHeader>(
+        'UPDATE event_sessions SET capacity_used = capacity_used + ? WHERE id = ? AND capacity_used + ? <= capacity',
+        [seats, sessionId, seats],
+      );
+      if (cap.affectedRows !== 1) throw new AppError(BIZ_CODES.EVENT_FULL);
+    }
 
     const now = toSqlDateTime();
     const paymentStatus = member ? 'NOT_REQUIRED' : 'UNPAID';
@@ -329,29 +354,54 @@ async function cancelRegistration(userId: string, regId: string, reason?: string
         [regId, amount, reason ?? null, userId, now, now],
       );
       if (reg.session_id) {
+        // 代拍不占名额、从不累加 capacity_used，退名额时也不能减（否则会把常规时段的计数减错）
         await conn.execute(
-          'UPDATE event_sessions SET capacity_used = capacity_used - 1 WHERE id = ? AND capacity_used > 0',
+          "UPDATE event_sessions SET capacity_used = capacity_used - 1 WHERE id = ? AND kind <> 'PROXY' AND capacity_used > 0",
           [reg.session_id],
         );
       }
     }
     await conn.execute('UPDATE registrations SET status = ?, cancel_reason = ? WHERE id = ?', [target, reason ?? null, regId]);
+
+    /**
+     * 发起人自己取消后，他为这个时段设置的回避规则一并失效。
+     * 否则人已经不来了，名单还挂在那里继续拦别人，对第三方不公平也不好解释。
+     */
+    if (reg.session_id) {
+      const stamp = toSqlDateTime();
+      await conn.execute(
+        `UPDATE session_avoid_rules
+            SET revoked_at = ?, revoked_by = ?, updated_at = ?
+          WHERE session_id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
+        [stamp, userId, stamp, String(reg.session_id), userId],
+      );
+    }
   });
   return { eventId };
 }
 
 /**
- * 后台手动录入（线下报名）。
+ * 后台手动录入（线下报名 / 补录）。
  *
- * 与线上报名的差异：
- * - 不扣积分、不用优惠券，金额按账号当前等级取价；
- * - 不拦截报名窗口/时段冲突（线下补录），但场次状态、等级可见性、时段容量必须校验；
- * - 始终走线下支付语义（PAID/UNPAID），退款审核不会回充积分，与「已线下收款」一致；
- * - 来源标记 source=MANUAL，报名管理列表据此区分线上自助报名与线下录入。
+ * 与线上自助登记**对齐**的部分（这里刻意复用同一套口径与同一批校验）：
+ * - 按账号当前等级取价；
+ * - 每名额最多一张优惠券，门槛/有效期/归属/场次开关全部校验，金额服务端重算；
+ * - 支持多名额，累计不超过 MAX_SEATS_PER_EVENT；
+ * - 选「扣积分」时走同一套账本 FREEZE 流水，报名记录里能追到 balance_txn_id。
+ *
+ * 只有两点不同，都是补录场景的必要放宽：
+ * - 不拦截报名窗口与时段冲突（线下补录常常晚于线上截止）；
+ * - 结算方式由运营显式指定，而不是由「是否有余额」推定（现场可能已收现金、也可能是赠票）。
+ *
+ * 依赖 payload 已通过 adminRegistrationCreateSchema 校验（券数 ≤ 名额数、券不重复）。
  */
 async function createManualRegistration(
   payload: AdminRegistrationCreatePayload,
-): Promise<RegistrationDto> {
+): Promise<{ registrations: RegistrationDto[]; warnings: string[] }> {
+  const seats = payload.seats;
+  const sortedCouponIds = [...payload.couponIds].sort();
+  const settleMode = payload.settleMode;
+
   return withTransaction(async (conn) => {
     const now = toSqlDateTime();
     const [userRows] = await conn.execute<RowDataPacket[]>(
@@ -370,6 +420,7 @@ async function createManualRegistration(
       [userId, now, now],
     );
     const level = effectiveLevel(levelRows.map((r) => ({ level: String(r.level) })));
+    const member = isMember(level);
 
     const [eventRows] = await conn.execute<EventRow[]>('SELECT * FROM events WHERE id = ? FOR UPDATE', [payload.eventId]);
     const event = eventRows[0];
@@ -400,33 +451,160 @@ async function createManualRegistration(
       level,
     );
 
-    const [cap] = await conn.execute<ResultSetHeader>(
-      'UPDATE event_sessions SET capacity_used = capacity_used + 1 WHERE id = ? AND capacity_used + 1 <= capacity',
-      [session.id],
-    );
-    if (cap.affectedRows !== 1) throw new AppError(BIZ_CODES.EVENT_FULL, '该时段名额已满，无法补录');
+    /* ---------------- 优惠券：与自助登记逐条对齐 ---------------- */
+    const discounts = new Array<number>(seats).fill(0);
+    if (sortedCouponIds.length) {
+      if (!event.allow_coupon) {
+        throw new AppError(BIZ_CODES.COUPON_NOT_ALLOWED, '该场次已关闭优惠券使用');
+      }
+      const placeholders = sortedCouponIds.map(() => '?').join(',');
+      // FOR UPDATE：防止同一张券被并发录入重复核销
+      const [couponRows] = await conn.query<RowDataPacket[]>(
+        `SELECT * FROM coupons WHERE user_id = ? AND id IN (${placeholders}) FOR UPDATE`,
+        [userId, ...sortedCouponIds],
+      );
+      const byId = new Map(couponRows.map((c) => [String(c.id), c]));
+      sortedCouponIds.forEach((id, i) => {
+        const coupon = byId.get(id);
+        if (!coupon) throw new AppError(BIZ_CODES.COUPON_INVALID, '优惠券不存在或不属于该账号');
+        if (coupon.status !== 'UNUSED') {
+          throw new AppError(BIZ_CODES.COUPON_INVALID, `优惠券「${coupon.title}」不可用`);
+        }
+        const expiresAt = coupon.expires_at
+          ? Date.parse(`${String(coupon.expires_at).replace(' ', 'T')}Z`)
+          : null;
+        if (expiresAt != null && expiresAt <= Date.now()) {
+          throw new AppError(BIZ_CODES.COUPON_INVALID, `优惠券「${coupon.title}」已过期`);
+        }
+        if (Number(coupon.min_spend_cent ?? 0) > priceCent) {
+          throw new AppError(BIZ_CODES.COUPON_INVALID, `优惠券「${coupon.title}」未达到最低消费门槛`);
+        }
+        discounts[i] = couponDiscountOf({
+          type: coupon.type,
+          discountBp: coupon.discount_bp == null ? null : Number(coupon.discount_bp),
+          amountCent: coupon.amount_cent == null ? null : Number(coupon.amount_cent),
+          maxDiscountCent: coupon.max_discount_cent == null ? null : Number(coupon.max_discount_cent),
+        }, priceCent);
+      });
+    }
 
+    /* ---------------- 结算方式与余额 ---------------- */
+    if (settleMode === 'CREDIT' && !member) {
+      throw new AppError(BIZ_CODES.INVALID_PARAM, '该账号不是 VIP/SVIP，没有积分账户，无法按「扣积分」结算');
+    }
+    const grossCent = priceCent * seats;
+    // 免费票：整单记 0 消耗，折扣列记为全额减免，便于列表里看出「免了多少」
+    const totalDiscount = settleMode === 'FREE'
+      ? grossCent
+      : discounts.reduce((s, d) => s + d, 0);
+    const payableCent = Math.max(0, grossCent - totalDiscount);
+
+    let available = 0;
+    if (member) {
+      const [bal] = await conn.execute<RowDataPacket[]>(
+        'SELECT available_cent FROM balance_accounts WHERE user_id = ?', [userId],
+      );
+      available = Number(bal[0]?.available_cent ?? 0);
+    }
+    if (settleMode === 'CREDIT' && payableCent > available) {
+      throw new AppError(
+        BIZ_CODES.BALANCE_INSUFFICIENT,
+        `该账号可用积分不足（可用 ${(available / 100).toFixed(2)}，本次需 ${(payableCent / 100).toFixed(2)}）`,
+      );
+    }
+
+    // 多名额上限与自助登记同口径，避免后台绕过「同一场次最多 N 个名额」的限制
+    const [activeRows] = await conn.execute<RowDataPacket[]>(
+      `SELECT COUNT(*) AS cnt FROM registrations
+        WHERE event_id = ? AND user_id = ?
+          AND status IN ('CONFIRMED','CHECKED_IN')`,
+      [payload.eventId, userId],
+    );
+    if (Number(activeRows[0]?.cnt ?? 0) + seats > MAX_SEATS_PER_EVENT) {
+      throw new AppError(BIZ_CODES.SEATS_EXCEEDED, `该账号在本场次累计名额已达上限（${MAX_SEATS_PER_EVENT} 个）`);
+    }
+
+    // 代拍不限人数，跳过余量校验与计数器累加（与自助登记同一口径）
+    const isProxySessionManual = String((session as { kind?: string }).kind ?? 'NORMAL') === 'PROXY';
+    if (!isProxySessionManual) {
+      const remaining = Number(session.capacity) - Number(session.capacity_used);
+      if (remaining < seats) {
+        throw new AppError(BIZ_CODES.EVENT_FULL, `该时段剩余名额不足（剩 ${Math.max(0, remaining)} 个）`);
+      }
+    }
+    // 命中回避名单时只警告不阻断：这是运营的手动录入，最终决定权在运营
+    const [avoidRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM session_avoid_rules WHERE session_id = ? AND blocked_user_id = ? AND revoked_at IS NULL LIMIT 1',
+      [session.id, userId],
+    );
+    const warnings: string[] = [];
+    if (avoidRows[0]) {
+      warnings.push('该账号在这个时段的回避名单里；本次按运营强制录入处理。');
+    }
+    if (!isProxySessionManual) {
+      const [cap] = await conn.execute<ResultSetHeader>(
+        'UPDATE event_sessions SET capacity_used = capacity_used + ? WHERE id = ? AND capacity_used + ? <= capacity',
+        [seats, session.id, seats],
+      );
+      if (cap.affectedRows !== 1) throw new AppError(BIZ_CODES.EVENT_FULL, '该时段名额已满，无法补录');
+    }
+
+    const paymentStatus = settleMode === 'CREDIT' || settleMode === 'FREE'
+      ? 'NOT_REQUIRED'
+      : settleMode === 'OFFLINE_PAID' ? 'PAID' : 'UNPAID';
     const stamp = toSqlDateTime();
-    const [inserted] = await conn.execute<ResultSetHeader>(
-      `INSERT INTO registrations
-        (event_id, session_id, user_id, status, payment_status, source,
-         fee_cent, original_fee_cent, discount_cent, coupon_id,
-         refund_policy_snapshot, idempotency_key, created_at, updated_at)
-       VALUES (?, ?, ?, 'CONFIRMED', ?, 'MANUAL', ?, ?, 0, NULL, ?, NULL, ?, ?)`,
-      [
-        payload.eventId, payload.sessionId, userId, payload.paymentStatus,
-        priceCent, priceCent, JSON.stringify(event.refund_policy), stamp, stamp,
-      ],
-    );
-    const [rows] = await conn.execute<RegistrationRow[]>(
-      `SELECT r.*, u.wechat_id AS user_wechat_id, c.title AS coupon_title
-         FROM registrations r
-         LEFT JOIN users u ON u.id = r.user_id
-         LEFT JOIN coupons c ON c.id = r.coupon_id
-        WHERE r.id = ?`,
-      [String(inserted.insertId)],
-    );
-    return registrationDtoOf(rows[0]!, eventDtoOf(event), sessionDtoOf(session));
+    const created: RegistrationDto[] = [];
+
+    for (let i = 0; i < seats; i += 1) {
+      const discountCent = settleMode === 'FREE' ? priceCent : (discounts[i] ?? 0);
+      const feeCent = Math.max(0, priceCent - discountCent);
+      const couponId = sortedCouponIds[i] ?? null;
+      const [inserted] = await conn.execute<ResultSetHeader>(
+        `INSERT INTO registrations
+          (event_id, session_id, user_id, status, payment_status, source,
+           fee_cent, original_fee_cent, discount_cent, coupon_id,
+           refund_policy_snapshot, idempotency_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'MANUAL', ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        [
+          payload.eventId, payload.sessionId, userId, payload.arriveStatus, paymentStatus,
+          feeCent, priceCent, discountCent, couponId,
+          JSON.stringify(event.refund_policy), stamp, stamp,
+        ],
+      );
+      const regId = String(inserted.insertId);
+
+      // 券已在本事务里 FOR UPDATE 锁过，条件更新只是兜底并发
+      if (couponId) {
+        const [claimed] = await conn.execute<ResultSetHeader>(
+          "UPDATE coupons SET status = 'USED', used_registration_id = ?, used_at = ? WHERE id = ? AND status = 'UNUSED'",
+          [regId, stamp, couponId],
+        );
+        if (claimed.affectedRows !== 1) throw new AppError(BIZ_CODES.COUPON_INVALID);
+      }
+
+      // 扣积分才记账本：与自助登记同一 op，取消/退款时能沿同一条链路回充
+      if (settleMode === 'CREDIT' && feeCent > 0) {
+        const ledger = await applyLedgerEntry(conn, {
+          userId, op: 'FREEZE', amountCent: feeCent,
+          bizType: 'REGISTRATION', bizId: regId,
+          idempotencyKey: `manual-${regId}`,
+          remark: '后台手动录入冻结',
+        });
+        await conn.execute('UPDATE registrations SET balance_txn_id = ? WHERE id = ?', [ledger.txnId, regId]);
+      }
+
+      const [rows] = await conn.execute<RegistrationRow[]>(
+        `SELECT r.*, u.wechat_id AS user_wechat_id, c.title AS coupon_title
+           FROM registrations r
+           LEFT JOIN users u ON u.id = r.user_id
+           LEFT JOIN coupons c ON c.id = r.coupon_id
+          WHERE r.id = ?`,
+        [regId],
+      );
+      created.push(registrationDtoOf(rows[0]!, eventDtoOf(event), sessionDtoOf(session)));
+    }
+
+    return { registrations: created, warnings };
   });
 }
 
@@ -453,7 +631,9 @@ export function mountRegistrations(app: Express): void {
     const { page, pageSize, offset } = pageArgsOf(req.query as { page?: number; pageSize?: number });
     const [rows] = await pool.execute<RegistrationRow[]>(
       `SELECT r.*, e.title AS event_title,
-              s.label AS session_label, s.start_at AS session_start_at,
+              s.label AS session_label, s.start_at AS session_start_at, s.end_at AS session_end_at,
+              s.capacity AS session_capacity, s.capacity_used AS session_capacity_used,
+              s.status AS session_status, s.sort_no AS session_sort_no, s.kind AS session_kind,
               c.title AS coupon_title
        FROM registrations r
        LEFT JOIN events e ON e.id = r.event_id
@@ -472,9 +652,20 @@ export function mountRegistrations(app: Express): void {
   pub.get('/:id', asyncHandler(async (req, res) => {
     const identity = getIdentity();
     if (!identity) throw new AppError(BIZ_CODES.UNAUTHORIZED);
+    /**
+     * 票根要用到场次标题与时段名，这里与「我的报名」列表保持同一套 join，
+     * 避免前端拿到一条只有 id 的记录还要再拼一次。
+     */
     const [rows] = await pool.execute<RegistrationRow[]>(
-      `SELECT r.*, c.title AS coupon_title
-         FROM registrations r LEFT JOIN coupons c ON c.id = r.coupon_id
+      `SELECT r.*, e.title AS event_title,
+              s.label AS session_label, s.start_at AS session_start_at, s.end_at AS session_end_at,
+              s.capacity AS session_capacity, s.capacity_used AS session_capacity_used,
+              s.status AS session_status, s.sort_no AS session_sort_no, s.kind AS session_kind,
+              c.title AS coupon_title
+         FROM registrations r
+         LEFT JOIN events e ON e.id = r.event_id
+         LEFT JOIN event_sessions s ON s.id = r.session_id
+         LEFT JOIN coupons c ON c.id = r.coupon_id
         WHERE r.id = ?`,
       [req.params.id],
     );
@@ -523,10 +714,9 @@ export function mountRegistrations(app: Express): void {
     const [rows] = await pool.execute<RegistrationRow[]>(
       `SELECT r.*, u.wechat_id AS user_wechat_id,
               e.title AS event_title,
-              s.label AS session_label, s.start_at AS session_start_at,
-              s.end_at AS session_end_at, s.capacity AS session_capacity,
-              s.capacity_used AS session_capacity_used, s.status AS session_status,
-              s.sort_no AS session_sort_no,
+              s.label AS session_label, s.start_at AS session_start_at, s.end_at AS session_end_at,
+              s.capacity AS session_capacity, s.capacity_used AS session_capacity_used,
+              s.status AS session_status, s.sort_no AS session_sort_no, s.kind AS session_kind,
               c.title AS coupon_title
        ${joinSql}
        LEFT JOIN event_sessions s ON s.id = r.session_id
@@ -564,21 +754,43 @@ export function mountRegistrations(app: Express): void {
       "SELECT level FROM memberships WHERE user_id = ? AND status = 'ACTIVE' AND start_at <= ? AND expire_at > ?",
       [String(user.id), now, now],
     );
+    // 手动录入弹窗要提前判断「扣积分够不够」，所以把可用积分一并带出
+    const [balRows] = await pool.execute<RowDataPacket[]>(
+      'SELECT available_cent FROM balance_accounts WHERE user_id = ?', [String(user.id)],
+    );
     sendOk(res, {
       id: String(user.id),
       wechatId: user.wechat_id,
       nickname: user.nickname,
       level: effectiveLevel(levelRows.map((r) => ({ level: String(r.level) }))),
       status: user.status,
+      availableCent: balRows[0] ? Number(balRows[0].available_cent) : null,
     });
   }));
 
   /**
-   * 下拉选人选项：手动录入 / 发券共用。
+   * 下拉选人选项：手动录入报名 / 优惠券发放 / 积分调账共用。
+   *
    * 运营没有会员管理权限，不能复用 /admin/users；这里只返回选人所需最小字段，
    * 运维账号与已删除账号不出现在选项中。
+   *
+   * ⚠️ 必须挂在独立 router 上，不能放进下面的 admin 组：
+   * admin 组有全局中间件 `admin.use(..., requireCapabilities('admin:registration:write'))`，
+   * 请求在进入本路由前就被拦掉，路由级再放宽也没用。
+   * 财务（FINANCE）只有 admin:balance:adjust:request，没有报名写权限，
+   * 若不放宽，财务打开「积分调账」弹窗时选人列表会一直为空（403 → 3001）。
    */
-  admin.get('/users', validateQuery(adminUserOptionsQuerySchema), asyncHandler(async (req, res) => {
+  const picker = Router();
+  picker.use(
+    authenticate,
+    requireAnyCapability(
+      'admin:registration:write',
+      'admin:balance:adjust:request',
+      'admin:membership:grant',
+      'admin:user:reset-password',
+    ),
+  );
+  picker.get('/users', validateQuery(adminUserOptionsQuerySchema), asyncHandler(async (req, res) => {
     const { keyword, limit } = req.query as unknown as AdminUserOptionsQueryInput;
     const kw = (keyword ?? '').trim();
     const where = [
@@ -616,30 +828,50 @@ export function mountRegistrations(app: Express): void {
       }
       for (const [key, list] of byUser) levelOf.set(key, effectiveLevel(list));
     }
+    /**
+     * 可用积分也要带出来：手动录入弹窗直接用本接口的返回值做「余额够不够」判断，
+     * 少了这个字段前端只能按 0 处理，会员也会被误判成「无积分账户」。
+     */
+    const balanceOf = new Map<string, number>();
+    if (ids.length) {
+      const [balRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT user_id, available_cent FROM balance_accounts
+          WHERE user_id IN (${ids.map(() => '?').join(', ')})`,
+        ids,
+      );
+      for (const b of balRows) balanceOf.set(String(b.user_id), Number(b.available_cent));
+    }
     sendOk(res, rows.map((r) => ({
       id: String(r.id),
       wechatId: r.wechat_id,
       nickname: r.nickname,
       level: levelOf.get(String(r.id)) ?? 'NONE',
       status: r.status === 'FROZEN' ? 'FROZEN' : 'ACTIVE',
+      availableCent: balanceOf.get(String(r.id)) ?? null,
     })));
   }));
+  // 与 admin 组同前缀挂载：picker 先注册，命中 /users 后不再往下走
+  app.use(`${API_BASE_PATH}/admin/registrations`, picker);
 
-  /** 手动录入线下报名：不扣积分，收款状态由运营选择 */
+  /** 手动录入：与自助登记同口径（名额 / 优惠券 / 按等级取价），结算方式由运营指定 */
   admin.post('/', validateBody(adminRegistrationCreateSchema), asyncHandler(async (req, res) => {
     const identity = getIdentity();
     if (!identity) throw new AppError(BIZ_CODES.UNAUTHORIZED);
     const payload = req.body as AdminRegistrationCreatePayload;
-    const created = await createManualRegistration(payload);
+    const { registrations: created, warnings } = await createManualRegistration(payload);
+    const totalFee = created.reduce((s, r) => s + r.feeCent, 0);
     await auditOf(res)?.({
-      action: 'REGISTRATION_MANUAL_CREATE', targetType: 'registration', targetId: created.id,
+      action: 'REGISTRATION_MANUAL_CREATE', targetType: 'registration',
+      targetId: created.map((r) => r.id).join(','),
       after: {
         wechatId: payload.wechatId, eventId: payload.eventId, sessionId: payload.sessionId,
-        paymentStatus: payload.paymentStatus, feeCent: created.feeCent, reason: payload.reason ?? null,
+        seats: payload.seats, settleMode: payload.settleMode,
+        couponIds: payload.couponIds, feeCent: totalFee, reason: payload.reason ?? null,
+        avoidWarnings: warnings,
       },
       actorId: identity.userId,
     });
-    sendOk(res, created, 201);
+    sendOk(res, { registrations: created, seats: created.length, warnings }, 201);
   }));
 
   admin.patch('/:id', validateBody(adminRegistrationActionSchema), asyncHandler(async (req, res) => {

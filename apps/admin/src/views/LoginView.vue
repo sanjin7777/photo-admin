@@ -61,12 +61,18 @@ async function submit(): Promise<void> {
       </div>
     </div>
     <div class="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <input v-model="account" class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500"
-        placeholder="微信号" autocomplete="username" @keyup.enter="submit" />
-      <input v-model="password" type="password" class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500"
-        placeholder="密码" autocomplete="current-password" @keyup.enter="submit" />
-      <p v-if="errorText" class="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{{ errorText }}</p>
-      <el-button type="primary" class="w-full" native-type="button" @click="submit">登录</el-button>
+      <el-form @submit.prevent>
+        <el-form-item>
+          <el-input v-model="account" size="large" placeholder="微信号" autocomplete="username"
+            clearable @keyup.enter="submit" />
+        </el-form-item>
+        <el-form-item>
+          <el-input v-model="password" type="password" size="large" placeholder="密码"
+            autocomplete="current-password" show-password @keyup.enter="submit" />
+        </el-form-item>
+        <el-alert v-if="errorText" :title="errorText" type="error" :closable="false" show-icon class="!mb-3" />
+        <el-button type="primary" native-type="button" size="large" class="w-full" @click="submit">登录</el-button>
+      </el-form>
       <p class="text-xs leading-relaxed text-slate-500">
         仅管理员 / 运营 / 财务账号可进入；PC 端体验最佳，移动端可查看与简单操作。
       </p>

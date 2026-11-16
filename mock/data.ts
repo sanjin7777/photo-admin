@@ -187,6 +187,8 @@ export const EVENT_PUBLIC = {
     { id: '21', eventId: '1', label: '第一场', startAt: iso(21, 10), endAt: iso(21, 11), capacity: 4, capacityUsed: 1, status: 'OPEN' as const },
     { id: '22', eventId: '1', label: '第二场', startAt: iso(21, 11, 10), endAt: iso(21, 12, 10), capacity: 4, capacityUsed: 2, status: 'OPEN' as const },
     { id: '23', eventId: '1', label: '第三场', startAt: iso(21, 12, 20), endAt: iso(21, 13, 20), capacity: 4, capacityUsed: 0, status: 'OPEN' as const },
+    // 代拍：独立于时段，每场次默认一个，价格与正常报名一致
+    { id: 'proxy-1', eventId: '1', label: '代拍', startAt: iso(21, 10), endAt: iso(21, 13, 20), capacity: 12, capacityUsed: 0, status: 'OPEN' as const, kind: 'PROXY' as const },
   ],
   prices: [
     { level: 'PUBLIC' as const, priceCent: 18900, unitLabel: '场' },
@@ -432,11 +434,13 @@ export const PERMISSION_LOGS = [
   { id: 'p2', action: 'MEMBERSHIP_REVOKE', targetType: 'user', targetId: '5', actorId: '1', createdAt: iso(-5) },
 ];
 
-/** 海报配置（后台可改，进程内保存）：两张码 + 左上角标题 */
+/** 海报配置（后台可改，进程内保存）：两张码 + 左上角标题 + 自定义版式 */
 export const POSTER_SETTINGS = {
   qrUrl: null as string | null,
   siteQrUrl: null as string | null,
   brandTitle: null as string | null,
+  /** 设计器保存的版式；null 表示未自定义，导出按预设渲染 */
+  layout: null as unknown,
 };
 
 /** 导入预览的固定演示数据：覆盖 OK / WARN（已存在）/ ERROR 三种状态 */

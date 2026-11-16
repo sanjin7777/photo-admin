@@ -55,7 +55,34 @@ export const eventCreateBaseSchema = z
     modelCount: z.number().int().min(1).max(20).default(1),
     allowProxyShoot: z.boolean().default(false),
     privateBookingNote: z.string().trim().max(200).nullable().optional(),
+    /**
+     * 主模特（向后兼容）：等于 modelIds[0]。
+     * 只传 modelId 的旧客户端仍可用，服务端会把它并入 modelIds。
+     */
     modelId: idSchema.nullable().optional(),
+    /** 本场次参与的全部模特；首项即主模特。双模特场次传 2 个 */
+    modelIds: z.array(idSchema).max(20, '一场最多 20 位模特').optional(),
+    /**
+     * 每位模特各自的当日服装图，与 `modelIds` 按下标一一对应。
+     *
+     * 用平行数组而不是把对象塞进 modelIds，是为了不破坏既有契约
+     * （`modelIds` 一直是 string[]，前台/投票/搜索都在用）。
+     * 某项为空数组时，该模特回退到 `wardrobeUrls`（整场共用那组）。
+     *
+     * 示例：`{ modelIds: [A, B], modelWardrobes: [['/a1.jpg'], ['/b1.jpg']] }`
+     */
+    modelWardrobes: z
+      .array(z.array(z.string().trim().max(512)).max(9))
+      .max(20)
+      .optional(),
+    /**
+     * 每位模特在本场使用的照片，与 `modelIds` 按下标对应（通常各 1 张）。
+     * 为空时回退 `posterUrls`（整场一张）或模特档案首图。
+     */
+    modelPhotos: z
+      .array(z.array(z.string().trim().max(512)).max(9))
+      .max(20)
+      .optional(),
     /** 关联场景库（点4）；仅引用，场地展示仍用本场次自己的 venue/scene/venueUrls */
     sceneId: idSchema.nullable().optional(),
     registrationOpenAt: isoDateTimeSchema,
@@ -78,6 +105,24 @@ export const eventCreateBaseSchema = z
   })
   .strict();
 
+/**
+ * 把「主模特」与「模特列表」归一成同一个数组。
+ *
+ * 兼容三种写法：
+ *   · 只传 modelIds   → 首项即主模特
+ *   · 只传 modelId    → 等价于 modelIds: [modelId]
+ *   · 两个都传        → 以 modelIds 为准，modelId 若不在其中则忽略
+ * 返回去重后的 id 数组（保持顺序），空数组表示未指定模特。
+ */
+export function normalizeModelIds(input: {
+  modelId?: string | null;
+  modelIds?: string[] | null;
+}): string[] {
+  const list = (input.modelIds ?? []).filter(Boolean);
+  if (list.length) return [...new Set(list)];
+  return input.modelId ? [input.modelId] : [];
+}
+
 export const eventCreateSchema = eventCreateBaseSchema.superRefine((v, ctx) => {
   const open = Date.parse(v.registrationOpenAt);
   const close = Date.parse(v.registrationCloseAt);
@@ -95,6 +140,11 @@ export const eventCreateSchema = eventCreateBaseSchema.superRefine((v, ctx) => {
   const levels = v.prices.map((p) => p.level);
   if (new Set(levels).size !== levels.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['prices'], message: '价格档位不可重复' });
+  }
+  // 模特列表内不允许重复（同一个人出现两次没有意义）
+  const ids = v.modelIds ?? [];
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['modelIds'], message: '同一模特不能重复添加' });
   }
 });
 export type EventCreatePayload = z.infer<typeof eventCreateSchema>;
@@ -157,15 +207,55 @@ export type RegistrationCancelPayload = z.infer<typeof registrationCancelSchema>
  * - 报名窗口与时段冲突不拦截（线下补录场景），但场次状态、等级可见性、
  *   时段容量仍由服务端校验，避免超卖或把非会员塞进会员场。
  */
+/**
+ * 手动录入（线下补录）。
+ *
+ * 与线上自助登记对齐的部分：名额数、优惠券、按等级取价、服务端重算金额。
+ * 不同之处只有两点，都是为了「现场/事后补录」这个场景：
+ *   - 不拦截报名窗口与时段冲突；
+ *   - 结算方式由运营显式选择（扣积分 / 线下收款 / 免费赠票），而不是由是否有余额推定。
+ */
+export const ADMIN_MANUAL_SETTLE_MODES = ['CREDIT', 'OFFLINE_PAID', 'OFFLINE_UNPAID', 'FREE'] as const;
+export type AdminManualSettleMode = (typeof ADMIN_MANUAL_SETTLE_MODES)[number];
+
+/** 结算方式的中文标签与说明，前后端共用，避免两处文案漂移 */
+export const ADMIN_MANUAL_SETTLE_META: Readonly<Record<AdminManualSettleMode, { label: string; hint: string }>> = {
+  CREDIT: { label: '扣积分', hint: '仅会员可用；提交后立即冻结对应积分并记账本流水' },
+  OFFLINE_PAID: { label: '线下已收', hint: '不扣积分，报名记为已收款' },
+  OFFLINE_UNPAID: { label: '线下待收', hint: '不扣积分，报名记为待收款，可稍后点「确认收款」' },
+  FREE: { label: '免费', hint: '不扣积分也不计收款，适用于赠票 / 邀请' },
+};
+
 export const adminRegistrationCreateSchema = z
   .object({
     wechatId: z.string().trim().min(1, '请填写报名账号的微信号').max(64),
     eventId: idSchema,
     sessionId: idSchema,
-    paymentStatus: z.enum(['PAID', 'UNPAID']).default('UNPAID'),
+    /** 名额数：与自助登记同一上限，一次最多 10 个 */
+    seats: z.number().int().min(1).max(10).default(1),
+    /**
+     * 结算方式：
+     * - CREDIT        扣积分（仅会员且余额足够；服务端记账本流水）
+     * - OFFLINE_PAID  线下已收款，不扣积分
+     * - OFFLINE_UNPAID 线下待收款，不扣积分
+     * - FREE          免费赠票，不扣积分也不计收款
+     */
+    settleMode: z.enum(ADMIN_MANUAL_SETTLE_MODES).default('OFFLINE_UNPAID'),
+    /** 优惠券：每名额最多一张，线下收款同样可用；金额服务端重算 */
+    couponIds: z.array(idSchema).max(10).default([]),
+    /** 到场状态：现场已确认则直接记 CHECKED_IN */
+    arriveStatus: z.enum(['CONFIRMED', 'CHECKED_IN']).default('CONFIRMED'),
     reason: z.string().trim().max(200).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.couponIds.length > v.seats) {
+      ctx.addIssue({ code: 'custom', path: ['couponIds'], message: '优惠券数量不能超过名额数' });
+    }
+    if (new Set(v.couponIds).size !== v.couponIds.length) {
+      ctx.addIssue({ code: 'custom', path: ['couponIds'], message: '同一张券不能重复使用' });
+    }
+  });
 export type AdminRegistrationCreatePayload = z.infer<typeof adminRegistrationCreateSchema>;
 
 /** 手动录入前按微信号查账号，避免运营盲填后提交才报错 */
@@ -173,6 +263,33 @@ export const adminRegistrationLookupQuerySchema = z
   .object({ wechatId: z.string().trim().min(1).max(64) })
   .strict();
 export type AdminRegistrationLookupQuery = z.infer<typeof adminRegistrationLookupQuerySchema>;
+
+/**
+ * 时段级回避名单（由运营配置）。
+ *
+ * 只给运营用：SVIP 不直接操作，避免把会员目录暴露给普通会员，
+ * 也避免会员之间因为一件小事互相设限。运营拿到诉求后代为配置。
+ */
+export const sessionAvoidRuleCreateSchema = z
+  .object({
+    sessionId: idSchema,
+    /** 为哪位会员设置（通常是已报名的 SVIP）；留空表示运营出于其它原因配置 */
+    ownerUserId: idSchema.nullable().optional(),
+    blockedUserId: idSchema,
+    note: z.string().trim().max(200).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.ownerUserId && v.ownerUserId === v.blockedUserId) {
+      ctx.addIssue({ code: 'custom', path: ['blockedUserId'], message: '不能把本人加入回避名单' });
+    }
+  });
+export type SessionAvoidRuleCreatePayload = z.infer<typeof sessionAvoidRuleCreateSchema>;
+
+export const sessionAvoidRuleListQuerySchema = z
+  .object({ sessionId: idSchema })
+  .strict();
+export type SessionAvoidRuleListQuery = z.infer<typeof sessionAvoidRuleListQuerySchema>;
 
 /**
  * 后台管理：只传「意图」，不传目标状态。

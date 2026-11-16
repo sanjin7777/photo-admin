@@ -8,15 +8,16 @@ import type { AdminCouponDto, AdminCouponIssuePayload, CouponStatus, CouponType 
 import { api } from '../api';
 import UserPicker from '../components/UserPicker.vue';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
+import AppPagination from '../components/AppPagination.vue';
 import { useUiStore } from '../stores/ui';
-import { yuan } from '../utils/labels';
+import { points } from '../utils/labels';
 
 const ui = useUiStore();
 
 const list = ref<AdminCouponDto[]>([]);
 const total = ref(0);
 const page = ref(1);
-const pageSize = 20;
+const pageSize = ref(20);
 const loading = ref(true);
 const statusFilter = ref('');
 const keyword = ref('');
@@ -32,12 +33,12 @@ const metaOf = (s: string): { label: string; cls: string } =>
 
 const fmt = (v: string | null): string =>
   v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '—';
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
 
 function faceText(c: AdminCouponDto): string {
-  if (c.type === 'AMOUNT') return `立减 ${yuan(Number(c.amountCent ?? 0))}`;
+  if (c.type === 'AMOUNT') return `减免 ${points(Number(c.amountCent ?? 0))}`;
   const rate = (Number(c.discountBp ?? 10000) / 1000).toFixed(1).replace(/\.0$/, '');
-  return `${rate} 折${c.maxDiscountCent ? `（最高抵 ${yuan(c.maxDiscountCent)}）` : ''}`;
+  return `${rate} 折${c.maxDiscountCent ? `（最高减 ${points(c.maxDiscountCent)}）` : ''}`;
 }
 
 /** 列定义：桌面表格与移动卡片共用，改列只改这一处 */
@@ -57,7 +58,7 @@ async function load(): Promise<void> {
   try {
     const res = await api.admin.coupons.list({
       page: page.value,
-      pageSize,
+      pageSize: pageSize.value,
       status: (statusFilter.value || undefined) as CouponStatus | undefined,
       keyword: keyword.value.trim() || undefined,
     });
@@ -85,7 +86,7 @@ const rows = computed(() => list.value.map((c) => ({
   status: c.status,
   expiresAt: c.expiresAt,
   usedAt: c.usedAt,
-  minSpend: c.minSpendCent > 0 ? `满 ${yuan(c.minSpendCent)}` : '无门槛',
+  minSpend: c.minSpendCent > 0 ? `满 ${points(c.minSpendCent)}` : '无门槛',
   expiresAtText: fmt(c.expiresAt),
   usedAtText: fmt(c.usedAt),
 })));
@@ -99,6 +100,20 @@ function goPage(delta: number): void {
   const next = page.value + delta;
   if (next < 1 || next > pageCount.value) return;
   page.value = next;
+  void load();
+}
+
+/** 分页组件回调（绝对页码，已由组件保证合法） */
+function goPageTo(next: number): void {
+  if (next === page.value) return;
+  page.value = next;
+  void load();
+}
+
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
   void load();
 }
 
@@ -151,7 +166,7 @@ async function submitCreate(): Promise<void> {
     payload = { ...base, discountBp: bp, ...(maxCent > 0 ? { maxDiscountCent: maxCent } : {}) };
   } else {
     const amountCent = Math.round(Number(form.amountYuan) * 100);
-    if (amountCent < 1) { ui.notify('立减金额至少 0.01 元', 'warning'); return; }
+    if (amountCent < 1) { ui.notify('减免积分至少 1 积分', 'warning'); return; }
     payload = { ...base, amountCent };
   }
 
@@ -194,27 +209,26 @@ async function revoke(row: AdminCouponDto): Promise<void> {
           券全场通用，不绑定场次；场次里关闭「允许使用优惠券」后该场新报名不可用券。每个名额最多用 1 张。
         </p>
       </div>
-      <button
-        class="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500/30 active:scale-[0.98]"
-        @click="openCreate"
-      >
-        <span aria-hidden="true" class="text-base leading-none">+</span>
-        发放优惠券
-      </button>
+      <el-button type="primary" @click="openCreate">+ 发放优惠券</el-button>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
-      <select v-model="statusFilter" class="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" @change="search">
-        <option value="">全部状态</option>
-        <option value="UNUSED">未使用</option>
-        <option value="USED">已使用</option>
-        <option value="EXPIRED">已过期</option>
-        <option value="REVOKED">已作废</option>
-      </select>
-      <input v-model="keyword" class="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-        placeholder="搜索微信号 / 昵称 / 券名称" @keyup.enter="search" />
-      <button class="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50" @click="search">查询</button>
-    </div>
+    <el-form inline class="rounded-xl border border-slate-200 bg-white p-3">
+      <el-form-item label="状态">
+        <el-select v-model="statusFilter" placeholder="全部状态" clearable class="!w-36" @change="search">
+          <el-option label="未使用" value="UNUSED" />
+          <el-option label="已使用" value="USED" />
+          <el-option label="已过期" value="EXPIRED" />
+          <el-option label="已作废" value="REVOKED" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="关键词">
+        <el-input v-model="keyword" placeholder="搜索微信号 / 昵称 / 券名称"
+          clearable class="!w-72" @keyup.enter="search" />
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="search">查询</el-button>
+      </el-form-item>
+    </el-form>
 
     <!-- 桌面表格 / 移动卡片共用一份列定义：手机横滚 8 列根本没法看 -->
     <ResponsiveTable :rows="rows" :columns="columns" :show-toolbar="false"
@@ -225,7 +239,7 @@ async function revoke(row: AdminCouponDto): Promise<void> {
           <p v-if="row.note" class="max-w-[12rem] truncate text-xs text-slate-500" :title="String(row.note)">{{ row.note }}</p>
         </template>
         <template v-else-if="column.key === 'face'">
-          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{{ row.type === 'DISCOUNT' ? '折扣券' : '立减券' }}</span>
+          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{{ row.type === 'DISCOUNT' ? '折扣券' : '减免券' }}</span>
           <span class="ml-1.5">{{ faceText(row.raw as AdminCouponDto) }}</span>
         </template>
         <template v-else-if="column.key === 'minSpend'">
@@ -257,7 +271,7 @@ async function revoke(row: AdminCouponDto): Promise<void> {
               <p class="clamp-1 font-medium text-slate-900">{{ row.title }}</p>
               <p v-if="row.note" class="clamp-1 text-xs text-slate-500">{{ row.note }}</p>
               <p class="mt-0.5 text-xs text-slate-600">
-                {{ row.type === 'DISCOUNT' ? '折扣券' : '立减券' }} · {{ faceText(row.raw as AdminCouponDto) }}
+                {{ row.type === 'DISCOUNT' ? '折扣券' : '减免券' }} · {{ faceText(row.raw as AdminCouponDto) }}
                 <span class="text-slate-500">· {{ row.minSpend }}</span>
               </p>
               <p class="mt-0.5 text-xs text-slate-600">{{ row.userWechatId }}<span v-if="row.userNickname" class="text-slate-500"> · {{ row.userNickname }}</span></p>
@@ -276,83 +290,73 @@ async function revoke(row: AdminCouponDto): Promise<void> {
       </template>
     </ResponsiveTable>
 
-    <div class="flex items-center justify-end gap-3 text-xs text-slate-500">
-      <span>共 {{ total }} 张 · 第 {{ page }} / {{ pageCount }} 页</span>
-      <button class="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40" :disabled="page <= 1" @click="goPage(-1)">上一页</button>
-      <button class="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40" :disabled="page >= pageCount" @click="goPage(1)">下一页</button>
-    </div>
+    <AppPagination
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :hide-on-single-page="true"
+      :summary="`共 ${total} 张`"
+      @change="(p) => goPageTo(p)"
+      @size-change="(s) => changePageSize(s)"
+    />
 
     <!-- 发券弹窗 -->
-    <div v-if="createOpen" class="fixed inset-0 z-[150] flex items-end justify-center bg-slate-900/50 p-0 sm:items-center sm:p-4">
-      <div class="absolute inset-0" @click="createOpen = false"></div>
-      <div class="relative max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white p-5 shadow-float ring-1 ring-slate-200 sm:rounded-2xl">
-        <div class="flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-slate-900">发放优惠券</h3>
-          <button class="text-slate-500 hover:text-slate-700" @click="createOpen = false">✕</button>
-        </div>
-
-        <div class="mt-4 space-y-3">
-          <label class="block">
-            <span class="mb-1 block text-xs text-slate-500">发放对象（下拉多选，最多 50 人）</span>
+    <el-dialog v-model="createOpen" title="发放优惠券" width="min(560px, 94vw)" destroy-on-close>
+      <el-form label-width="96px" label-position="left">
+        <el-form-item label="发放对象">
+          <div class="w-full">
             <UserPicker v-model="form.wechatIds" multiple :max="50" placeholder="搜索微信号或昵称，可多选" />
-            <span class="mt-1 block text-xs text-slate-500">已选 {{ parsedWechatIds.length }} 人；每个用户各生成一张独立券。</span>
-          </label>
-
-          <label class="block">
-            <span class="mb-1 block text-xs text-slate-500">券名称</span>
-            <input v-model="form.title" maxlength="32" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例如：11 月活动 85 折券" />
-          </label>
-
-          <div class="flex gap-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <label class="flex items-center gap-1.5">
-              <input v-model="form.type" type="radio" value="DISCOUNT" class="text-brand focus:ring-brand/30" /> 折扣券
-            </label>
-            <label class="flex items-center gap-1.5">
-              <input v-model="form.type" type="radio" value="AMOUNT" class="text-brand focus:ring-brand/30" /> 立减券
-            </label>
+            <span class="mt-1 block text-xs text-slate-500">已选 {{ parsedWechatIds.length }} 人；每个用户各生成一张独立券（最多 50 人）。</span>
           </div>
+        </el-form-item>
+        <el-form-item label="券名称">
+          <el-input v-model="form.title" maxlength="32" show-word-limit
+            placeholder="例如：11 月活动 85 折券" />
+        </el-form-item>
+        <el-form-item label="券类型">
+          <el-radio-group v-model="form.type">
+            <el-radio value="DISCOUNT">折扣券</el-radio>
+            <el-radio value="AMOUNT">减免券</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="form.type === 'DISCOUNT'" label="折扣">
+          <el-input-number v-model="form.discountRate" :min="1" :max="9.999" :step="0.1"
+            :precision="3" controls-position="right" class="!w-36" />
+          <span class="ml-2 text-xs text-slate-500">8.5 = 8.5 折</span>
+        </el-form-item>
+        <el-form-item v-else label="减免积分">
+          <el-input-number v-model="form.amountYuan" :min="0.01" :step="1"
+            controls-position="right" class="!w-36" />
+          <span class="ml-2 text-xs text-slate-500">积分</span>
+        </el-form-item>
+        <el-form-item label="最低消费">
+          <el-input-number v-model="form.minSpendYuan" :min="0" :step="1"
+            controls-position="right" class="!w-36" />
+          <span class="ml-2 text-xs text-slate-500">积分，0 = 无门槛</span>
+        </el-form-item>
+        <el-form-item v-if="form.type === 'DISCOUNT'" label="优惠封顶">
+          <el-input-number v-model="form.maxDiscountYuan" :min="0" :step="1"
+            controls-position="right" class="!w-36" />
+          <span class="ml-2 text-xs text-slate-500">积分，0 = 不封顶</span>
+        </el-form-item>
+        <el-form-item label="有效期至">
+          <el-date-picker v-model="form.expiresAt" type="datetime" placeholder="留空为长期有效"
+            format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" clearable class="!w-full" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="form.note" maxlength="200" show-word-limit placeholder="例如：双十一回馈" />
+        </el-form-item>
+      </el-form>
 
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label v-if="form.type === 'DISCOUNT'" class="block">
-              <span class="mb-1 block text-xs text-slate-500">折扣（8.5 = 8.5 折）</span>
-              <input v-model.number="form.discountRate" type="number" min="1" max="9.999" step="0.1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label v-else class="block">
-              <span class="mb-1 block text-xs text-slate-500">立减金额（元）</span>
-              <input v-model.number="form.amountYuan" type="number" min="0.01" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-slate-500">最低消费（元，0 = 无门槛）</span>
-              <input v-model.number="form.minSpendYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label v-if="form.type === 'DISCOUNT'" class="block">
-              <span class="mb-1 block text-xs text-slate-500">最高优惠封顶（元，0 = 不封顶）</span>
-              <input v-model.number="form.maxDiscountYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-          </div>
+      <el-alert type="info" :closable="false"
+        title="折扣券在登记时的档位积分基础上折算；一次登记 N 个名额最多用 N 张券，券数不足时其余名额不享减免。取消登记后券自动退回，未过期可再次使用。" />
 
-          <label class="block">
-            <span class="mb-1 block text-xs text-slate-500">有效期至（选填，留空为长期有效）</span>
-            <input v-model="form.expiresAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-xs text-slate-500">备注（选填）</span>
-            <input v-model="form.note" maxlength="200" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例如：双十一回馈" />
-          </label>
-
-          <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-            折扣券在报名时的档位价（会员价/活动价）基础上打折；一次报名 N 个名额最多用 N 张券，
-            券数不足时其余名额按原价。退款完成后退回，未过期可再次使用。
-          </p>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <el-button @click="createOpen = false">取消</el-button>
+          <el-button type="primary" :loading="creating" @click="submitCreate">确认发放</el-button>
         </div>
-
-        <div class="mt-5 flex gap-2">
-          <button class="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50" @click="createOpen = false">取消</button>
-          <button class="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50" :disabled="creating" @click="submitCreate">
-            {{ creating ? '发放中…' : '确认发放' }}
-          </button>
-        </div>
-      </div>
-    </div>
+      </template>
+    </el-dialog>
   </div>
 </template>

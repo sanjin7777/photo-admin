@@ -8,6 +8,7 @@ import type { AdminVoteCampaignDto, ModelProfileDto, VoteLiveDto } from '@photo/
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import ImageUploader from '../components/ImageUploader.vue';
+import AppPagination from '../components/AppPagination.vue';
 import { VOTE_STATUS, metaOf, shortTime, toLocalInput } from '../utils/labels';
 
 const ui = useUiStore();
@@ -37,6 +38,31 @@ const options = ref<OptionDraft[]>([
 ]);
 
 const imageCount = computed(() => options.value.filter((o) => o.images.length).length);
+
+/**
+ * 投票活动用前端分页。
+ * `/votes` 接口返回完整数组（活动数量本身很少，一年不过几十场），
+ * 为避免后台「有的页面有分页、有的没有」的不一致，这里在本地切片。
+ */
+const page = ref(1);
+const pageSize = ref(20);
+const total = computed(() => campaigns.value.length);
+const pagedCampaigns = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return campaigns.value.slice(start, start + pageSize.value);
+});
+
+/** 分页组件回调（页码已由组件保证合法） */
+function goPageTo(next: number): void {
+  if (next === page.value) return;
+  page.value = next;
+}
+
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -285,7 +311,7 @@ async function saveEdit(): Promise<void> {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in campaigns" :key="c.id" class="border-t border-slate-100 hover:bg-slate-50/60">
+          <tr v-for="c in pagedCampaigns" :key="c.id" class="border-t border-slate-100 hover:bg-slate-50/60">
             <td class="px-3 py-2.5">
               <div class="flex items-center gap-2.5">
                 <div class="relative h-11 w-11 shrink-0 overflow-hidden rounded-md bg-slate-100">
@@ -333,7 +359,7 @@ async function saveEdit(): Promise<void> {
 
       <!-- 移动端卡片 -->
       <div class="divide-y divide-slate-100 md:hidden">
-        <div v-for="c in campaigns" :key="c.id" class="p-3">
+        <div v-for="c in pagedCampaigns" :key="c.id" class="p-3">
           <div class="flex items-start justify-between gap-2">
             <p class="clamp-1 font-medium text-slate-900">{{ c.title }}</p>
             <span class="shrink-0 rounded-full px-2 py-0.5 text-[11px]" :class="metaOf(VOTE_STATUS, c.status).cls">{{ metaOf(VOTE_STATUS, c.status).label }}</span>
@@ -352,32 +378,43 @@ async function saveEdit(): Promise<void> {
       </div>
     </div>
 
+    <AppPagination
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :hide-on-single-page="true"
+      :summary="`共 ${total} 个投票活动`"
+      @change="(p) => goPageTo(p)"
+      @size-change="(s) => changePageSize(s)"
+    />
+
     <!-- 新建弹窗 -->
     <el-dialog v-model="dialogOpen" title="新建投票" width="min(760px, 94vw)" top="7vh" destroy-on-close>
       <div class="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">基本信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">活动标题 <i class="text-rose-500">*</i></span>
-              <input v-model="form.title" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：3 月场服装方案投票" />
-            </label>
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">关联模特</span>
-              <el-select v-model="form.modelId" filterable clearable placeholder="不关联模特（前台不展示模特资料）" class="w-full">
-                <el-option v-for="m in models" :key="m.id" :label="m.stageName" :value="m.id" />
-              </el-select>
-              <span class="mt-1 block text-xs text-slate-500">选定后前台投票页顶部展示该模特资料；身高/三围仍仅会员可见。</span>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">开始时间 <i class="text-rose-500">*</i></span>
-              <input v-model="form.openAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">结束时间 <i class="text-rose-500">*</i></span>
-              <input v-model="form.closeAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-          </div>
+          <el-form label-width="86px" label-position="left">
+            <el-form-item label="活动标题" required>
+              <el-input v-model="form.title" placeholder="例：3 月场服装方案投票" clearable />
+            </el-form-item>
+            <el-form-item label="关联模特">
+              <div class="w-full">
+                <el-select v-model="form.modelId" filterable clearable
+                  placeholder="不关联模特（前台不展示模特资料）" class="!w-full">
+                  <el-option v-for="m in models" :key="m.id" :label="m.stageName" :value="m.id" />
+                </el-select>
+                <span class="mt-1 block text-xs text-slate-500">选定后前台投票页顶部展示该模特资料；身高/三围仍仅会员可见。</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="开始时间" required>
+              <el-date-picker v-model="form.openAt" type="datetime" placeholder="选择开始时间"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+            <el-form-item label="结束时间" required>
+              <el-date-picker v-model="form.closeAt" type="datetime" placeholder="选择结束时间"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
@@ -391,7 +428,7 @@ async function saveEdit(): Promise<void> {
             <div v-for="(o, i) in options" :key="i" class="rounded-lg bg-slate-50 p-3">
               <div class="mb-2 flex items-center gap-2">
                 <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs text-slate-600">{{ i + 1 }}</span>
-                <input v-model="o.name" class="min-w-0 flex-1 rounded border border-slate-300 px-2.5 py-1.5 text-sm outline-none focus:border-blue-500" placeholder="方案名称，如：复古胶片" />
+                <el-input v-model="o.name" placeholder="方案名称，如：复古胶片" class="!flex-1" />
                 <el-button size="small" text type="danger" :disabled="options.length <= 2" @click="removeOption(i)">删除</el-button>
               </div>
               <ImageUploader v-model="o.images" :max="1" cover-hint="" />
@@ -420,27 +457,28 @@ async function saveEdit(): Promise<void> {
         </p>
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">基本信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">活动标题 <i class="text-rose-500">*</i></span>
-              <input v-model="editForm.title" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">关联模特</span>
-              <el-select v-model="editForm.modelId" filterable clearable placeholder="不关联模特（前台不展示模特资料）" class="w-full">
-                <el-option v-for="m in models" :key="m.id" :label="m.stageName" :value="m.id" />
-              </el-select>
-              <span class="mt-1 block text-xs text-slate-500">选定后前台投票页顶部展示该模特资料；身高/三围仍仅会员可见。</span>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">开始时间 <i class="text-rose-500">*</i></span>
-              <input v-model="editForm.openAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">结束时间 <i class="text-rose-500">*</i></span>
-              <input v-model="editForm.closeAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-          </div>
+          <el-form label-width="86px" label-position="left">
+            <el-form-item label="活动标题" required>
+              <el-input v-model="editForm.title" clearable />
+            </el-form-item>
+            <el-form-item label="关联模特">
+              <div class="w-full">
+                <el-select v-model="editForm.modelId" filterable clearable
+                  placeholder="不关联模特（前台不展示模特资料）" class="!w-full">
+                  <el-option v-for="m in models" :key="m.id" :label="m.stageName" :value="m.id" />
+                </el-select>
+                <span class="mt-1 block text-xs text-slate-500">选定后前台投票页顶部展示该模特资料；身高/三围仍仅会员可见。</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="开始时间" required>
+              <el-date-picker v-model="editForm.openAt" type="datetime" placeholder="选择开始时间"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+            <el-form-item label="结束时间" required>
+              <el-date-picker v-model="editForm.closeAt" type="datetime" placeholder="选择结束时间"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
@@ -452,7 +490,7 @@ async function saveEdit(): Promise<void> {
             <div v-for="(o, i) in editOptions" :key="o.id ?? `new-${i}`" class="rounded-lg bg-slate-50 p-3">
               <div class="mb-2 flex items-center gap-2">
                 <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs text-slate-600">{{ i + 1 }}</span>
-                <input v-model="o.name" class="min-w-0 flex-1 rounded border border-slate-300 px-2.5 py-1.5 text-sm outline-none focus:border-blue-500" placeholder="方案名称" />
+                <el-input v-model="o.name" placeholder="方案名称" class="!flex-1" />
                 <span v-if="o.voteCount > 0" class="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">{{ o.voteCount }} 票</span>
                 <span v-else-if="!o.id" class="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700">新增</span>
                 <el-button size="small" text type="danger" :disabled="editOptions.length <= 2 || o.voteCount > 0" @click="removeEditOption(i)">删除</el-button>
@@ -522,8 +560,8 @@ async function saveEdit(): Promise<void> {
               <h4 class="text-sm font-semibold text-slate-900">
                 投票人明细（{{ voterKeyword ? `${visibleVoters.length}/${live.voters.length}` : live.voters.length }}）
               </h4>
-              <input v-model="voterKeyword" class="w-56 rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none focus:border-blue-500"
-                placeholder="搜索微信号 / 昵称 / 方案" />
+              <el-input v-model="voterKeyword" placeholder="搜索微信号 / 昵称 / 方案"
+                clearable class="!w-56" />
             </div>
             <div class="overflow-x-auto">
               <table class="hidden w-full text-left text-sm md:table">

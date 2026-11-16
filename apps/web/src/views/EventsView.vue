@@ -8,6 +8,7 @@ import { useUiStore } from '../stores/ui';
 import EventCard from '../components/EventCard.vue';
 
 type EventTab = 'cat' | 'jade';
+type EventScope = 'upcoming' | 'past';
 
 const events = ref<EventDto[]>([]);
 const loading = ref(true);
@@ -21,6 +22,18 @@ const { isDesktop } = useBreakpoint();
 const session = useSessionStore();
 const ui = useUiStore();
 const columns = computed(() => (isDesktop.value ? 'lg:grid-cols-3' : 'sm:grid-cols-2'));
+
+/** 历史活动只对登录用户开放；游客不渲染该入口 */
+const loggedIn = computed(() => session.user !== null);
+
+/* ---- 历史活动：独立分区，按需加载 ---- */
+const pastEvents = ref<EventDto[]>([]);
+const pastLoading = ref(false);
+const pastLoaded = ref(false);
+const pastPage = ref(1);
+const pastTotal = ref(0);
+const pastHasMore = computed(() => pastEvents.value.length < pastTotal.value);
+const pastOpen = ref(false);
 
 const catEvents = computed(() => events.value.filter((e) => e.visibility === 'PUBLIC'));
 const jadeEvents = computed(() => events.value.filter((e) => e.visibility !== 'PUBLIC'));
@@ -50,22 +63,68 @@ const emptyHint = computed(() =>
   activeTab.value === 'jade' ? '新发布的会员专场会出现在这里' : '新场次发布后会出现在这里',
 );
 
+async function fetchScope(scope: EventScope, nextPage: number): Promise<{ list: EventDto[]; total: number }> {
+  return api.events.list({ page: nextPage, pageSize, scope });
+}
+
 async function loadMore(): Promise<void> {
   loadingMore.value = true;
   try {
-    const res = await api.events.list({ page: page.value, pageSize });
-    events.value = page.value === 1 ? res.list : [...events.value, ...res.list];
+    const res = await fetchScope('upcoming', page.value);
+    events.value = [...events.value, ...res.list];
     total.value = res.total;
     page.value += 1;
   } catch (e) {
     ui.notify(e instanceof Error ? e.message : '加载失败', 'fail');
   } finally {
-    loading.value = false;
     loadingMore.value = false;
   }
 }
 
-onMounted(loadMore);
+/** 历史活动默认折叠：首次展开时才请求，避免不关心历史的用户白拉一次 */
+async function togglePast(): Promise<void> {
+  pastOpen.value = !pastOpen.value;
+  if (!pastOpen.value || pastLoaded.value || !loggedIn.value) return;
+  pastLoading.value = true;
+  try {
+    const res = await fetchScope('past', 1);
+    pastEvents.value = res.list;
+    pastTotal.value = res.total;
+    pastPage.value = 2;
+    pastLoaded.value = true;
+  } catch (e) {
+    ui.notify(e instanceof Error ? e.message : '历史活动加载失败', 'fail');
+  } finally {
+    pastLoading.value = false;
+  }
+}
+
+async function loadPastMore(): Promise<void> {
+  pastLoading.value = true;
+  try {
+    const res = await fetchScope('past', pastPage.value);
+    pastEvents.value = [...pastEvents.value, ...res.list];
+    pastTotal.value = res.total;
+    pastPage.value += 1;
+  } catch (e) {
+    ui.notify(e instanceof Error ? e.message : '加载失败', 'fail');
+  } finally {
+    pastLoading.value = false;
+  }
+}
+
+onMounted(async () => {
+  try {
+    const res = await fetchScope('upcoming', 1);
+    events.value = res.list;
+    total.value = res.total;
+    page.value = 2;
+  } catch (e) {
+    ui.notify(e instanceof Error ? e.message : '加载失败', 'fail');
+  } finally {
+    loading.value = false;
+  }
+});
 </script>
 
 <template>
@@ -77,7 +136,7 @@ onMounted(loadMore);
           <p class="text-xs tracking-[0.35em] text-brand">猫爪社摄影会</p>
           <h1 class="mt-1 text-2xl font-semibold tracking-tight text-slate-900 md:text-3xl">近期场次</h1>
           <p class="mt-1.5 text-sm text-slate-500">
-            选好时段在线报名，会员价按报名时的等级结算。
+            选好时段在线登记，积分按登记时的会员等级结算。
           </p>
         </div>
         <span class="chip bg-white px-3 py-1 text-slate-600 ring-1 ring-slate-200">
@@ -109,20 +168,20 @@ onMounted(loadMore);
     <template v-else-if="currentEvents.length">
       <!-- 报名中：可进入详情报名 -->
       <div v-if="openEvents.length" class="mb-2 flex items-center gap-2">
-        <h2 class="text-sm font-semibold text-slate-900">报名中</h2>
+        <h2 class="text-sm font-semibold text-slate-900">登记中</h2>
         <span class="text-xs text-slate-500">{{ openEvents.length }} 场</span>
       </div>
       <div v-if="openEvents.length" class="grid grid-cols-1 gap-4" :class="columns">
         <EventCard v-for="event in openEvents" :key="event.id" :event="event" />
       </div>
       <p v-else class="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-xs text-slate-500">
-        暂无报名中的场次
+        暂无登记中的场次
       </p>
 
       <!-- 报名已截止：与报名中分隔，只读基础信息 -->
       <div v-if="closedEvents.length" class="mt-8 border-t border-slate-200 pt-5">
         <div class="mb-3 flex items-baseline gap-2">
-          <h2 class="text-sm font-semibold text-slate-600">报名已截止</h2>
+          <h2 class="text-sm font-semibold text-slate-600">登记已截止</h2>
           <span class="text-xs text-slate-500">{{ closedEvents.length }} 场 · 仅供查看</span>
         </div>
         <div class="grid grid-cols-1 gap-4" :class="columns">
@@ -142,5 +201,47 @@ onMounted(loadMore);
         {{ loadingMore ? '加载中…' : `加载更多（已显示 ${events.length} / ${total}）` }}
       </button>
     </div>
+
+    <!-- ============ 历史活动（仅登录用户可见） ============ -->
+    <div v-if="loggedIn" class="mt-10 border-t border-slate-200 pt-5">
+      <button type="button"
+        class="flex w-full items-center justify-between rounded-xl px-1 py-2 text-left transition hover:bg-slate-50"
+        @click="togglePast">
+        <span class="flex items-baseline gap-2">
+          <span class="text-sm font-semibold text-slate-600">历史活动</span>
+          <span class="text-xs text-slate-500">
+            {{ pastLoaded ? `${pastTotal} 场 · 已结束` : '已结束的场次回顾' }}
+          </span>
+        </span>
+        <span class="text-xs text-slate-400">{{ pastOpen ? '收起' : '展开' }}</span>
+      </button>
+
+      <div v-if="pastOpen" class="mt-3">
+        <div v-if="pastLoading && !pastEvents.length" class="grid grid-cols-1 gap-4" :class="columns">
+          <div v-for="i in 3" :key="i" class="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />
+        </div>
+
+        <template v-else-if="pastEvents.length">
+          <div class="grid grid-cols-1 gap-4" :class="columns">
+            <EventCard v-for="event in pastEvents" :key="event.id" :event="event" closed />
+          </div>
+          <div v-if="pastHasMore" class="mt-5 flex justify-center">
+            <button class="btn-ghost px-6 py-2 text-sm disabled:opacity-50" :disabled="pastLoading" @click="loadPastMore">
+              {{ pastLoading ? '加载中…' : `加载更多历史（已显示 ${pastEvents.length} / ${pastTotal}）` }}
+            </button>
+          </div>
+        </template>
+
+        <div v-else class="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-12 text-center">
+          <p class="text-sm font-medium text-slate-700">暂无历史活动</p>
+          <p class="text-xs text-slate-500">已结束的场次会归档到这里</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 游客提示：历史活动需登录后查看 -->
+    <p v-else class="mt-8 text-center text-xs text-slate-400">
+      登录后可查看历史活动
+    </p>
   </section>
 </template>

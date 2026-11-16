@@ -9,6 +9,9 @@ import { AppError, BIZ_CODES } from '@photo/shared';
 
 type AnySchema = z.ZodTypeAny;
 
+/** 原始请求体的挂载点：Zod 的 .default() 会抹平「缺省」与「显式传默认值」的差异 */
+const RAW_BODY = Symbol('rawBody');
+
 function parseOrThrow(schema: AnySchema, value: unknown): unknown {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -17,9 +20,23 @@ function parseOrThrow(schema: AnySchema, value: unknown): unknown {
   return result.data;
 }
 
+/**
+ * 读取「校验前」的原始请求体。
+ *
+ * 用于区分「字段没传」与「显式传了默认值」——例如 eventPatchSchema 上
+ * allowProxyShoot 带 `.default(false)`，partial() 之后缺省时仍会注入 false，
+ * 业务层若只看 parsed.data 就会把「没改」误判成「主动关闭」。
+ */
+export function rawBodyOf(req: Request): Record<string, unknown> {
+  const raw = (req as unknown as Record<symbol, unknown>)[RAW_BODY];
+  return (raw ?? {}) as Record<string, unknown>;
+}
+
 export function validateBody(schema: AnySchema) {
   return (req: Request, _res: Response, next: NextFunction): void => {
     try {
+      // 先留存原始体，再覆盖：顺序不能反，否则拿到的就是已注入默认值的版本
+      (req as unknown as Record<symbol, unknown>)[RAW_BODY] = req.body;
       req.body = parseOrThrow(schema, req.body);
       next();
     } catch (error) {

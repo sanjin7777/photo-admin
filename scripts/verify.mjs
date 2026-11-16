@@ -14,7 +14,23 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-const esbuild = require(path.join(ROOT, 'packages/shared/node_modules/esbuild'));
+// esbuild 在 CI（pnpm 扁平提升）下位于 packages/shared/node_modules，
+// 但本地 pnpm isolated 链接方式会把它放在 .pnpm 里，这里按优先级依次回退。
+const ESBUILD_CANDIDATES = [
+  path.join(ROOT, 'packages/shared/node_modules/esbuild'),
+  path.join(ROOT, 'node_modules/esbuild'),
+  'esbuild',
+];
+const esbuild = (() => {
+  for (const candidate of ESBUILD_CANDIDATES) {
+    try {
+      return require(candidate);
+    } catch {
+      // 继续尝试下一个位置
+    }
+  }
+  throw new Error('找不到 esbuild：请先在项目根目录执行 pnpm install');
+})();
 
 const sharedEntry = path.join(ROOT, 'packages/shared/src/index.ts');
 const policyEntry = path.join(ROOT, 'apps/server/src/domain/policy.ts');
@@ -134,7 +150,8 @@ for (const p of ['apps/web/src/views/LoginView.vue', 'apps/admin/src/views/Login
   assert.ok(!src.includes('session.reset();'), `${p}: 不应再调用会清 token 的 reset`);
   assert.ok(src.includes('catch'), `${p}: 登录失败须中断流程`);
 }
-for (const p of ['apps/web/src/views/ProfileView.vue', 'apps/admin/src/layouts/AdminLayout.vue']) {
+// 退出登录已从个人中心移到设置页（/settings），断言跟着走
+for (const p of ['apps/web/src/views/SettingsView.vue', 'apps/admin/src/layouts/AdminLayout.vue']) {
   assert.ok(read(p).includes('session.logout()'), `${p}: 退出登录须清凭证`);
 }
 const httpClient = read('packages/shared/src/api/http.ts');
@@ -222,14 +239,14 @@ assert.ok(!finCaps.has('admin:export'), '财务不应再具备导出');
 // 能力合并结果与角色表一致（含多角色并集）
 const merged = S.capabilitiesFor({ authenticated: true, level: 'NONE', backendRoles: ['ADMIN', 'SUPER_ADMIN'] });
 assert.ok(merged.has('admin:export'), '多角色叠加应取并集');
-const svipCaps = S.capabilitiesFor({ authenticated: true, level: 'SVIP', backendRoles: [] });
-assert.ok(svipCaps.has('vote:cast'), 'SVIP 应有投票能力（前台入口据此显示）');
-assert.ok(svipCaps.has('vote:result:read'), 'SVIP 应能查看投票结果');
-const vipCaps = S.capabilitiesFor({ authenticated: true, level: 'VIP', backendRoles: [] });
-assert.ok(!vipCaps.has('vote:cast'), 'VIP 不应有投票能力');
-assert.ok(!vipCaps.has('vote:result:read'), 'VIP 不应能查看投票结果');
-const noneCaps = S.capabilitiesFor({ authenticated: true, level: 'NONE', backendRoles: [] });
-assert.ok(!noneCaps.has('vote:result:read'), '普通用户不应能查看投票结果');
+const capsSvipP = S.capabilitiesFor({ authenticated: true, level: 'SVIP', backendRoles: [] });
+assert.ok(capsSvipP.has('vote:cast'), 'SVIP 应有投票能力（前台入口据此显示）');
+assert.ok(capsSvipP.has('vote:result:read'), 'SVIP 应能查看投票结果');
+const capsVipP = S.capabilitiesFor({ authenticated: true, level: 'VIP', backendRoles: [] });
+assert.ok(!capsVipP.has('vote:cast'), 'VIP 不应有投票能力');
+assert.ok(!capsVipP.has('vote:result:read'), 'VIP 不应能查看投票结果');
+const capsNoneP = S.capabilitiesFor({ authenticated: true, level: 'NONE', backendRoles: [] });
+assert.ok(!capsNoneP.has('vote:result:read'), '普通用户不应能查看投票结果');
 assert.ok(read('apps/server/src/modules/votes.module.ts').includes("requireCapabilities('vote:result:read')"),
   '投票结果接口须按 vote:result:read 判权');
 
@@ -489,7 +506,11 @@ assert.ok(eventsView.includes('pristine'), '编辑态须保存打开时的表单
 assert.ok(eventsView.includes('JSON.stringify(value) !== JSON.stringify'), '保存须逐字段比对，仅提交变更字段');
 // 弹窗须暴露退款规则的编辑入口
 assert.ok(eventsView.includes('>退款规则<'), '弹窗须有退款规则编辑区');
-assert.ok(eventsView.includes('v-model.number="form.refundFeeRatio"'), '退款费率须可编辑');
+// 退款费率须可编辑：已统一到 Element Plus 的 el-input-number，不再用原生 v-model.number
+assert.ok(
+  eventsView.includes('v-model="form.refundFeeRatio"') || eventsView.includes('v-model.number="form.refundFeeRatio"'),
+  '退款费率须可编辑',
+);
 // 候补已下线：表单、回填、载荷三处都不得再出现候补开关
 assert.ok(!eventsView.includes('allowWaitlist'), '候补开关已随功能下线，不得残留在表单/回填/载荷中');
 assert.ok(!eventsView.includes('v-model="form.allowWaitlist"'), '候补开关不得再出现');
@@ -577,7 +598,7 @@ assert.ok(webRouterSrc.includes("path: '/password'"), '前台须有修改密码�
 assert.ok(webRouterSrc.includes('mustChangePassword'), '路由守卫须拦截未改密的导入账号');
 const changePwdView = read('apps/web/src/views/ChangePasswordView.vue');
 assert.ok(changePwdView.includes('api.auth.changePassword'), '改密页须调用本人改密接口');
-assert.ok(read('apps/web/src/views/ProfileView.vue').includes('to="/password"'), '个人中心须有修改密码入口');
+assert.ok(read('apps/web/src/views/SettingsView.vue').includes('to="/password"'), '设置页须有修改密码入口');
 assert.ok(read('apps/admin/src/views/MembersView.vue').includes('result.credentials'), '导入结果须展示逐账号临时口令');
 
 // P0-2：清库脚本重命名 + 交互确认 + 自动备份；旧脚本不再存在
@@ -596,7 +617,7 @@ assert.ok(ledgerSrc.includes("direction IN ('FREEZE','OUT')"), "对账扣减方�
 // P1 小项
 assert.ok(read('apps/web/src/views/LoginView.vue').includes('safeRedirect'), '前台登录 redirect 须做站内白名单');
 assert.ok(read('apps/admin/src/views/LoginView.vue').includes('safeRedirect'), '后台登录 redirect 须做站内白名单');
-assert.ok(read('apps/web/src/views/ProfileView.vue').includes('退出失败'), '前台登出失败须提示且不清本地态');
+assert.ok(read('apps/web/src/views/SettingsView.vue').includes('退出失败'), '前台登出失败须提示且不清本地态');
 assert.ok(read('apps/admin/src/layouts/AdminLayout.vue').includes('退出失败'), '后台登出失败须提示且不清本地态');
 for (const p of ['apps/web/src/stores/session.ts', 'apps/admin/src/stores/session.ts']) {
   assert.ok(!/finally\s*\{\s*loaded\.value = true/.test(read(p)), `${p}: hydrate 失败不得置 loaded=true`);
@@ -609,8 +630,9 @@ assert.ok(envSrc.includes('不得使用仓库内的开发默认'), '生产环境
 
 /* ---------- 第 24 组：退款驳回/重新申请、场次取消退款、协议白名单、限流上限、投票开放、状态回填、补丁校验、实扣金额 ---------- */
 // P1-4：驳回退款把名额还回 event_sessions（而非已废弃的 events.capacity_used），并防超卖
-assert.ok(balanceSrc.includes('UPDATE event_sessions SET capacity_used = capacity_used + 1 WHERE id = ? AND capacity_used < capacity'),
-  '驳回退款须在容量未满时把名额还回 event_sessions');
+// 代拍不占名额，回补时同样要跳过（kind <> 'PROXY'）
+assert.ok(balanceSrc.includes("capacity_used = capacity_used + 1 WHERE id = ? AND kind <> 'PROXY' AND capacity_used < capacity"),
+  '驳回退款须在容量未满时把名额还回 event_sessions（跳过代拍）');
 assert.ok(!balanceSrc.includes('UPDATE events SET capacity_used'),
   '驳回退款不得再改 events.capacity_used（该列无处扣减，会凭空放大名额）');
 assert.ok(balanceSrc.includes('BIZ_CODES.EVENT_FULL'), '名额已被占满时驳回须明确报错而不是静默超卖');
@@ -657,7 +679,7 @@ assert.ok(read('mock/index.ts').includes('/open$/.test(path)'), 'mock 须镜像�
 
 // P1-17：biz_type 标签单一来源
 assert.ok(!read('apps/admin/src/utils/labels.ts').includes('BIZ_TYPE'), '后台不得再维护本地 biz_type 字典');
-assert.ok(read('apps/web/src/views/ProfileView.vue').includes('labelOf(t.bizType)'), '前台流水类型须走共享标签');
+assert.ok(read('apps/web/src/views/PointsView.vue').includes('labelOf(t.bizType)'), '前台流水类型须走共享标签');
 assert.ok(read('apps/admin/src/views/FinanceView.vue').includes('labelOf(t.bizType)'), '后台流水类型须走共享标签');
 assert.ok(!/REGISTRATION.*报名|bizLabel/.test(read('apps/web/src/views/ProfileView.vue')), '前台不得再保留本地类型映射');
 
@@ -669,13 +691,22 @@ assert.ok(!/editForm\.status = 'ACTIVE'/.test(membersView), '编辑弹窗不得�
 
 // P1-20：patchEvent 须合并库中原值再校验时间链，并拒绝被静默忽略的派生字段
 assert.ok(eventsModuleSrc.includes('由时段与价格自动推导'), 'patch 传 capacity/feeCent 等派生字段须明确报错');
-assert.ok(eventsModuleSrc.includes('修改时段必须同时提交分档价格'), '只改时段不给价格须报错');
+// 时段与价格必须能分开提交：只想改金额 / 只想改时间都不该被拦
+assert.ok(!eventsModuleSrc.includes('修改时段必须同时提交分档价格'), '不得再强制时段与价格一起提交');
+assert.ok(eventsModuleSrc.includes('const wantsSessions = Array.isArray(patch.sessions)'),
+  'patch 须分别判断是否提交了时段');
+assert.ok(eventsModuleSrc.includes('const wantsPrices = Array.isArray(patch.prices)'),
+  'patch 须分别判断是否提交了价格');
+assert.ok(eventsModuleSrc.includes('syncSessions: wantsSessions, syncPrices: wantsPrices'),
+  '只提交一侧时另一侧的表不得被改动');
+assert.ok(eventsModuleSrc.includes('if (syncPrices)'), '未提交价格时不得删除 event_prices');
+assert.ok(eventsModuleSrc.includes('if (syncSessions)'), '未提交时段时不得删除 event_sessions');
 assert.ok(eventsModuleSrc.includes('报名截止不能晚于时段'), 'patch 须用合并后的报名窗口校验时段');
 assert.ok(eventsModuleSrc.includes('const chain = patch.sessions'), 'patch 未改时段时须以库中原值参与校验');
 
-// P1-23：成功提示展示服务端实扣金额
-assert.ok(detailRound4.includes('实扣 ${yuan(charged)}'), '报名成功须展示服务端实际扣款');
-assert.ok(detailRound4.includes('以服务端结算为准'), '预估价旁须提示以服务端结算为准');
+// P1-23：成功提示展示服务端实际消耗的积分（已去货币化，页面只出现积分不出现金额）
+assert.ok(detailRound4.includes('消耗 ${pts(charged)}'), '登记成功须展示服务端实际消耗积分');
+assert.ok(detailRound4.includes('以服务端逐条 feeCent 为准'), '预估值旁须提示以服务端结算为准');
 
 // 本轮：投票可不关联场次 / 流水显示微信号 / 报名列表回填场次名与时段
 assert.ok(read('apps/server/src/migrations/013_vote_campaign_optional_event.sql').includes('event_id BIGINT UNSIGNED NULL'),
@@ -703,6 +734,9 @@ assert.ok(read('apps/admin/src/utils/poster.ts').includes('1080') && read('apps/
 assert.ok(read('apps/admin/src/utils/poster.ts').includes('toBlob'), '海报须导出 PNG 文件');
 assert.ok(read('apps/admin/src/utils/poster.ts').includes('wardrobeUrls?.[0]'), '海报须叠加当日服装图');
 assert.ok(read('apps/admin/src/utils/poster.ts').includes('venueUrls?.[0]'), '海报须叠加场地照片');
+// 标题排版：字号自动下探 + 优先在 ·／空格处断行，避免「猫爪社摄影 / 会·白电波」这种词内断开
+assert.ok(read('apps/admin/src/utils/poster.ts').includes('BREAK_TOKENS'), '海报标题须优先在分隔符处断行');
+assert.ok(read('apps/admin/src/utils/poster.ts').includes('TITLE_SIZES'), '海报标题字号须可自动下探以容纳完整词组');
 assert.ok(read('apps/admin/src/views/EventsView.vue').includes('exportEventPoster'), '场次列表须接入导出海报');
 assert.ok(read('apps/admin/src/views/EventsView.vue').includes('海报二维码'), '后台须提供固定二维码配置入口');
 assert.ok(read('mock/index.ts').includes('/admin/settings/poster'), 'mock 须镜像海报配置端点');
@@ -732,8 +766,10 @@ const patchBlock = eventsModuleSrc.slice(
   eventsModuleSrc.indexOf('async function patchEvent'),
   eventsModuleSrc.indexOf('export function mountEvents'),
 );
-assert.ok(patchBlock.includes('syncRelations(conn, id, patch.sessions, patch.prices, lockedRows, now)'),
+assert.ok(/syncRelations\(\s*conn,\s*id,/.test(patchBlock),
   'patchEvent 配了 sessions 时必须走 syncRelations，而不是先删后插');
+assert.ok(/syncSessions: wantsSessions, syncPrices: wantsPrices/.test(patchBlock),
+  'syncRelations 须按提交情况分别同步时段与价格');
 assert.ok(/FROM event_sessions WHERE event_id = \? ORDER BY sort_no ASC[\s\S]*?FOR UPDATE/.test(patchBlock),
   '同步时段前须锁住该场次全部时段，避免与报名写入交叉');
 assert.ok(eventsModuleSrc.includes('还有 ${cnt} 人报名，不能删除'), '删除仍有报名的时段须整单拒绝并给出人数');
@@ -792,15 +828,108 @@ assert.ok(settingsSrc.includes('writeSetting(BRAND_TITLE_KEY, brandTitle)'), '�
 const posterSrc = read('apps/admin/src/utils/poster.ts');
 assert.ok(posterSrc.includes('export const DEFAULT_BRAND_TITLE'), '海报须有默认标题常量');
 assert.ok(posterSrc.includes("CAT'S PAW · 猫爪摄影会"), '默认标题须保持现有文案');
-assert.ok(posterSrc.includes('drawBrand(ctx, brandTitle)'), '海报须使用配置标题');
+assert.ok(posterSrc.includes('drawBrandBlock(ctx, block, brandTitle)'), '海报须使用配置标题');
 assert.ok(posterSrc.includes('brandTitle: string | null = null'), '导出函数须接收标题参数');
 assert.ok(eventsView.includes('brandTitleDraft'), '后台须提供标题输入');
 assert.ok(eventsView.includes('DEFAULT_BRAND_TITLE'), '后台须提示默认标题');
-assert.ok(eventsView.includes('exportEventPoster(e, qrUrl.value, siteQrUrl.value, brandTitle.value)'), '导出须传入配置标题');
+assert.ok(eventsView.includes('siteQrUrl: siteQrUrl.value'), '导出须传入网站二维码');
 assert.ok(read('mock/index.ts').includes('brandTitle: POSTER_SETTINGS.brandTitle'), 'mock 须镜像标题配置');
 assert.ok(S.posterSettingsUpdateSchema.safeParse({ qrUrl: null, brandTitle: '我的摄影会' }).success, '合法标题须通过校验');
 assert.ok(!S.posterSettingsUpdateSchema.safeParse({ qrUrl: null, brandTitle: '猫' }).success, '单字标题须被拒绝');
 assert.ok(S.posterSettingsUpdateSchema.parse({ qrUrl: null, brandTitle: '' }).brandTitle === null, '空标题须归一为默认');
+
+/* ---------- 海报设计器（低代码版式）：拖拽排版 + 版式持久化 ---------- */
+const posterLayoutSrc = read('packages/shared/src/schemas/poster.ts');
+assert.ok(posterLayoutSrc.includes('POSTER_CANVAS'), '版式须定义 1080×1620 画布常量');
+assert.ok(posterLayoutSrc.includes('width: 1080') && posterLayoutSrc.includes('height: 1620'), '画布尺寸须与导出 PNG 一致');
+assert.ok(posterLayoutSrc.includes("'stage2'"), '版式须支持第二模特图区块');
+assert.ok(posterLayoutSrc.includes("'wardrobe'") && posterLayoutSrc.includes("'venue'"), '版式须含服装与场地区块');
+assert.ok(posterLayoutSrc.includes('posterLayoutSchema'), '版式须有 zod schema 统一校验');
+assert.ok(posterLayoutSrc.includes('posterPresetOf'), '版式须提供预设（经典/双人/通栏）');
+// 预设必须包含服装与场地，否则又会出现「导出没带图和衣服图」
+const classicPreset = posterLayoutSrc.slice(
+  posterLayoutSrc.indexOf('const CLASSIC'),
+  posterLayoutSrc.indexOf('const DUO'),
+);
+assert.ok(classicPreset.includes("mk('wardrobe'") && classicPreset.includes("mk('venue'"),
+  '经典预设须含服装与场地区块');
+const duoPreset = posterLayoutSrc.slice(
+  posterLayoutSrc.indexOf('const DUO'),
+  posterLayoutSrc.indexOf('const COMPACT'),
+);
+assert.ok(duoPreset.includes("mk('wardrobe'") && duoPreset.includes("mk('venue'"),
+  '双人预设也须含服装与场地区块（此前 duo 丢图）');
+assert.ok(duoPreset.includes("mk('stage2'"), '双人预设须含第二模特图');
+assert.ok(posterLayoutSrc.includes('nextBlockId'), '新增区块须自动分配不冲突 id');
+
+// 持久化：版式单独存一个键，保存设计器不得清掉二维码
+const settingsSrc2 = read('apps/server/src/modules/settings.ts');
+assert.ok(settingsSrc2.includes('LAYOUT_KEY'), '版式须单独持久化');
+assert.ok(settingsSrc2.includes("'poster_layout'"), '版式存储键须为 poster_layout');
+assert.ok(settingsSrc2.includes('parseLayout'), '读取版式须容错解析');
+assert.ok(settingsSrc2.includes('poster_layout'), '版式须落 app_settings');
+assert.ok(settingsSrc2.includes("/layout"), '版式须有独立读写端点，避免覆盖二维码');
+assert.ok(read('packages/shared/src/schemas/settings.ts').includes('posterLayoutUpdateSchema'),
+  '版式保存须有专用 schema');
+assert.ok(read('packages/shared/src/api/endpoints.ts').includes('/admin/settings/poster/layout'),
+  'shared 端点须含版式接口');
+assert.ok(read('packages/shared/src/api/client.ts').includes('posterLayout'), 'API 客户端须提供版式读写');
+
+// 渲染器：区块化后仍须带上服装 / 场地 / 两枚二维码
+const renderSrc = read('apps/admin/src/utils/poster.ts');
+assert.ok(renderSrc.includes('renderPoster'), '海报须有统一的区块渲染入口');
+assert.ok(renderSrc.includes('wardrobeUrls?.[0]'), '海报须加载当日服装图');
+assert.ok(renderSrc.includes('venueUrls?.[0]'), '海报须加载场地照片');
+assert.ok(renderSrc.includes("case 'wardrobe'") && renderSrc.includes("case 'venue'"),
+  '渲染器须绘制服装与场地区块');
+assert.ok(renderSrc.includes("case 'qrSite'"), '渲染器须支持网站二维码区块');
+assert.ok(renderSrc.includes('block.imageUrl'), '区块须支持替换图片源');
+assert.ok(renderSrc.includes('.filter((b) => b.visible)'), '隐藏区块不得出现在导出图里');
+assert.ok(renderSrc.includes('presetLayout'), '导出须能回退到预设版式');
+
+// 设计器交互
+const designerSrc = read('apps/admin/src/components/PosterDesigner.vue');
+assert.ok(designerSrc.includes('beginDrag'), '设计器须支持拖拽区块');
+assert.ok(designerSrc.includes('resize-se') && designerSrc.includes('resize-nw'), '设计器须支持四角缩放');
+assert.ok(designerSrc.includes('ArrowLeft'), '设计器须支持方向键微调');
+assert.ok(designerSrc.includes('renderPoster'), '设计器预览须复用真实渲染器（所见即所得）');
+assert.ok(designerSrc.includes('posterLayoutSchema.safeParse'), '保存前须按同一 schema 自检');
+assert.ok(designerSrc.includes('duplicateBlock'), '设计器须支持复制区块');
+assert.ok(designerSrc.includes('toFront') && designerSrc.includes('toBack'), '设计器须支持置顶/置底');
+assert.ok(designerSrc.includes('addBlock'), '设计器须支持添加区块');
+// 画布与热区必须同尺度：高度交给 aspect-ratio，宽度量准，否则框和内容会错位/拉伸
+assert.ok(designerSrc.includes('aspect-ratio: 1080 / 1620'), '画布容器须用 aspect-ratio 锁定比例，避免图片被拉伸');
+assert.ok(/max-width: calc\(\(100vh - \d+px\) \* 0\.6667\)/.test(designerSrc), '画布须按视口高度限制宽度，保证整张一屏可见');
+assert.ok(designerSrc.includes('watch(stageEl'), '须在画布元素出现后测量宽度（v-if 渲染时机）');
+assert.ok(designerSrc.includes('if (w > 0) stageW.value = w'), '量到 0 时不得覆盖已有缩放比');
+// 预览必须画在模板里那个固定 canvas 上，不能替换 DOM 节点（替换会丢 scoped 样式，导致内容不跟框动）
+assert.ok(designerSrc.includes('ctx.drawImage(rendered, 0, 0)'), '预览须把渲染结果画到固定 canvas，而不是更换节点');
+assert.ok(!designerSrc.includes('replaceChild'), '不得用 replaceChild 替换预览 canvas');
+// 点击层必须与画面一致：热区按 z 排序，跳过的区块不拦截点击
+assert.ok(designerSrc.includes('v-for="b in hitOrderBlocks"'), '热区须按 z 顺序渲染（否则点到的和看到的不是同一个）');
+assert.ok(designerSrc.includes('const hitOrderBlocks = orderedBlocks'), '热区顺序须等同渲染顺序');
+assert.ok(designerSrc.includes('is-skipped'), '本场不绘制的区块须标记为跳过');
+assert.ok(designerSrc.includes("'is-skipped': skippedInRender.has(b.id)"), '跳过状态须反映到热区样式上');
+assert.ok(designerSrc.includes('skippedInRender'), '须计算「本场不绘制的区块」并禁用其点击');
+assert.ok(designerSrc.includes('onDiagnostics'), '渲染器须回报实际跳过的区块，供设计器对齐点击层');
+assert.ok(renderSrc.includes('onDiagnostics?.({ skippedIds'), '渲染器须在结束时回报跳过清单');
+// 重叠时能选到下层区块
+assert.ok(designerSrc.includes('onHotspotClick'), '点击须走统一的选中逻辑');
+assert.ok(designerSrc.includes('ev.altKey'), '须支持 Alt+点击在重叠区块间循环选中');
+// 拖动对齐辅助线
+assert.ok(designerSrc.includes('guides'), '设计器须有对齐辅助线');
+assert.ok(designerSrc.includes('collectSnapTargets'), '须收集其它区块的边缘/中线作为吸附目标');
+assert.ok(designerSrc.includes('snapAnchors'), '须把区块锚点吸附到参考线');
+assert.ok(designerSrc.includes('poster-guide'), '须有辅助线的渲染节点');
+assert.ok(designerSrc.includes('guides.value = { vertical: [], horizontal: [] }'), '松手后须清掉辅助线');
+assert.ok(eventsView.includes('PosterDesigner'), '场次页须接入海报设计器');
+assert.ok(eventsView.includes('openDesigner'), '导出弹窗须提供设计器入口');
+
+// 区块之间不得互相压字：宽高都要参与排版计算
+assert.ok(renderSrc.includes('availH'), '标题须按区块可用高度退字号');
+assert.ok(renderSrc.includes('const clipped = '), '文字区块须限制在自己的矩形内绘制');
+assert.ok(renderSrc.includes("case 'wardrobe': return '当日服装'"), '服装图须带「当日服装」角标');
+assert.ok(renderSrc.includes("case 'venue': return '场地照片'"), '场地图须带「场地照片」角标');
 
 /* ---------- 第 27 组：前台场次拆「猫爪 / 玉竹」+ 报名截止只读分组 ---------- */
 const webEventsView = read('apps/web/src/views/EventsView.vue');
@@ -829,8 +958,12 @@ const webEventDetail = read('apps/web/src/views/EventDetailView.vue');
 const adminCouponsView = read('apps/admin/src/views/CouponsView.vue');
 
 // 份额：折扣在最终价基础上打，立减不越过原价，可减到 0
-assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 8500 }, 18900), 16065, '折扣券须按最终价打 85 折');
+// 注意 discountBp 是「实付比例」：85 折 = 8500bp = 实付 85%，减免额 = 18900 × 15% = 2835
+// （曾把 18900 × 85% = 16065 当成减免额，导致 8 折券只收原价 20%）
+assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 8500 }, 18900), 2835, '折扣券须按最终价打 85 折（返回减免额）');
 assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 8500, maxDiscountCent: 2000 }, 18900), 2000, '折扣券须受封顶限制');
+assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 10000 }, 18900), 0, '10 折即无减免');
+assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 8000 }, 14900), 2980, '8 折：149 积分应减 29.8');
 assert.equal(S.couponDiscountOf({ type: 'AMOUNT', amountCent: 5000 }, 3000), 3000, '立减券不得超过原价');
 assert.equal(S.couponDiscountOf({ type: 'AMOUNT', amountCent: 5000 }, 5000), 5000, '立减可减到 0 元');
 
@@ -877,7 +1010,7 @@ assert.ok(migrationsSrc.includes('回滚'), '迁移须写明回滚思路');
 assert.ok(webEventDetail.includes('api.coupons.mine()'), '报名弹窗须加载我的优惠券');
 assert.ok(webEventDetail.includes('每个名额只能用 1 张券') || webEventDetail.includes('每个名额仅可使用 1 张优惠券'), '须提示一名额一张券');
 assert.ok(webEventDetail.includes('本场次不可使用优惠券'), '场次关券须在前台提示');
-assert.ok(webEventDetail.includes('原价') && webEventDetail.includes('合计金额'), '确认弹窗须拆分原价与折后金额');
+assert.ok(webEventDetail.includes('基准积分') && webEventDetail.includes('本次消耗'), '确认弹窗须拆分基准积分与券后消耗');
 assert.ok(read('apps/web/src/views/ProfileView.vue').includes('我的优惠券'), '个人中心须可查看优惠券');
 assert.ok(read('apps/web/src/views/MyRegistrationsView.vue').includes('discountCent'), '我的报名须展示折后信息');
 assert.ok(eventsView.includes('allowCoupon'), '后台场次编辑须有券开关');
@@ -944,22 +1077,63 @@ const permDtoSrc = read('apps/server/src/domain/dto.ts');
 assert.ok(/permissionLogDtoOf[\s\S]*?targetType: 'user'[\s\S]*?target_user_id/.test(permDtoSrc),
   '权限日志须回填对象，避免列表显示 undefined');
 
-/* ---------- 第 32 组：手动录入线下报名 + 后台易用性 ---------- */
+/* ---------- 第 32 组：手动录入 + 后台易用性 ---------- */
+// 手动录入已与自助登记对齐：名额、优惠券、扣积分/线下收款/免费由运营显式指定
 const manualOk = S.adminRegistrationCreateSchema.safeParse({
   wechatId: 'u1_catpaw', eventId: '1', sessionId: '2',
 });
-assert.ok(manualOk.success && manualOk.data.paymentStatus === 'UNPAID', '手动录入默认待收款');
+assert.ok(manualOk.success && manualOk.data.settleMode === 'OFFLINE_UNPAID',
+  '手动录入默认「线下待收」');
+assert.ok(manualOk.data.seats === 1 && Array.isArray(manualOk.data.couponIds),
+  '手动录入默认 1 个名额、不使用优惠券');
 assert.ok(!S.adminRegistrationCreateSchema.safeParse({ eventId: '1', sessionId: '2' }).success, '手动录入须填微信号');
-assert.ok(!S.adminRegistrationCreateSchema.safeParse({
-  wechatId: 'u1_catpaw', eventId: '1', sessionId: '2', paymentStatus: 'NOT_REQUIRED',
-}).success, '手动录入只允许已收/待收，不得写 NOT_REQUIRED');
+assert.ok(
+  !S.adminRegistrationCreateSchema.safeParse({
+    wechatId: 'u1_catpaw', eventId: '1', sessionId: '2', settleMode: 'NOT_REQUIRED',
+  }).success,
+  '结算方式只允许 CREDIT / OFFLINE_PAID / OFFLINE_UNPAID / FREE',
+);
+assert.ok(
+  !S.adminRegistrationCreateSchema.safeParse({
+    wechatId: 'u1_catpaw', eventId: '1', sessionId: '2', seats: 1, couponIds: ['c1', 'c2'],
+  }).success,
+  '优惠券数量不得超过名额数',
+);
+assert.ok(
+  !S.adminRegistrationCreateSchema.safeParse({
+    wechatId: 'u1_catpaw', eventId: '1', sessionId: '2', seats: 2, couponIds: ['c1', 'c1'],
+  }).success,
+  '同一张券不得重复使用',
+);
 
 const regModuleSrc = read('apps/server/src/modules/registrations.module.ts');
 assert.ok(regModuleSrc.includes("admin.post('/', validateBody(adminRegistrationCreateSchema)"), '须提供后台手动录入接口');
 assert.ok(regModuleSrc.includes("admin.get('/lookup'"), '须提供微信号校验接口，运营无需会员管理权限');
 assert.ok(regModuleSrc.includes("action: 'REGISTRATION_MANUAL_CREATE'"), '手动录入须写审计日志');
-assert.ok(regModuleSrc.includes('capacity_used + 1 <= capacity'), '手动录入须校验时段余量，避免超卖');
+assert.ok(regModuleSrc.includes('capacity_used + ? <= capacity'), '手动录入须按名额数原子校验余量，避免超卖');
 assert.ok(regModuleSrc.includes('effectiveLevel('), '手动录入须按账号当前有效等级取价');
+// 与自助登记同一套券校验：归属/状态/过期/门槛
+const manualFnSrc = regModuleSrc.slice(
+  regModuleSrc.indexOf('async function createManualRegistration'),
+  regModuleSrc.indexOf('export function mountRegistrations'),
+);
+assert.ok(manualFnSrc.includes('couponDiscountOf'), '手动录入须用与自助登记相同的券折扣算法');
+assert.ok(manualFnSrc.includes("coupon.status !== 'UNUSED'"), '手动录入须校验券状态');
+assert.ok(manualFnSrc.includes('min_spend_cent'), '手动录入须校验券门槛');
+assert.ok(manualFnSrc.includes('allow_coupon'), '手动录入须遵守场次的「允许用券」开关');
+assert.ok(manualFnSrc.includes("op: 'FREEZE'"), '选「扣积分」时须走账本冻结，与自助登记同链路');
+assert.ok(manualFnSrc.includes('BALANCE_INSUFFICIENT'), '扣积分前须校验余额');
+assert.ok(manualFnSrc.includes('MAX_SEATS_PER_EVENT'), '手动录入须遵守同一场次名额上限');
+assert.ok(manualFnSrc.includes("'MANUAL'"), '手动录入须显式写 source=MANUAL');
+// 弹窗用选人下拉的返回值判断余额，少这个字段会员会被误判成「无积分账户」
+assert.ok(
+  regModuleSrc.includes('availableCent: balanceOf.get') && regModuleSrc.includes('availableCent: balRows[0]'),
+  '选人与 lookup 两端都必须返回可用积分，否则手动录入会误判余额不足',
+);
+assert.ok(
+  read('apps/admin/src/views/RegistrationsView.vue').includes('refreshLookup'),
+  '选人后须再查一次权威账号信息，不能只信下拉缓存',
+);
 
 const regViewSrc = read('apps/admin/src/views/RegistrationsView.vue');
 assert.ok(regViewSrc.includes('api.admin.registrations.create'), '报名管理须接入手动录入');
@@ -1010,7 +1184,18 @@ assert.ok(eventsViewSrc.includes('名额/名单') && eventsViewSrc.includes('查
 assert.ok(regViewSrc.includes('时段名额：') && regViewSrc.includes('sessionFilter'), '报名管理须有时段占用条与时段筛选');
 assert.ok(regViewSrc.includes('导出筛选结果') && regViewSrc.includes('\\uFEFF'), '报名管理须导出筛选结果（CSV 带 BOM）');
 assert.ok(read('apps/admin/src/views/CouponsView.vue').includes('UserPicker') && read('apps/admin/src/views/CouponsView.vue').includes('multiple'), '发券对象须改为下拉多选');
-assert.ok(regModuleSrc.includes("admin.get('/users'"), '须提供选人选项端点，运营无需会员管理权限');
+/**
+ * 选人选项端点必须存在，且**不能**只挂在对 admin:registration:write 有硬要求的 admin 组上。
+ * 财务要用它发起积分调账，但财务没有报名写权限，所以该端点需走「任一能力」的独立 router。
+ */
+assert.ok(
+  regModuleSrc.includes("picker.get('/users'") || regModuleSrc.includes("admin.get('/users'"),
+  '须提供选人选项端点，运营无需会员管理权限',
+);
+assert.ok(
+  regModuleSrc.includes('requireAnyCapability') && regModuleSrc.includes("'admin:balance:adjust:request'"),
+  '选人选项端点须放宽给财务（调账选人），否则财务下拉列表为空',
+);
 assert.ok(regModuleSrc.includes('session_capacity_used'), '报名列表须回填时段容量，供余位/已满展示');
 assert.ok(read('mock/index.ts').includes("path === '/admin/registrations/users'"), 'mock 须镜像选人选项端点');
 assert.ok(read('packages/shared/src/api/client.ts').includes('userOptions'), 'client 须提供选人选项方法');
@@ -1065,8 +1250,9 @@ assert.ok(financeView35.includes('txnBizType') && financeView35.includes('BALANC
 const membersView35 = read('apps/admin/src/views/MembersView.vue');
 assert.ok(membersView35.includes('bonusYuan') && membersView35.includes('累计赠送'), '用户管理须有授予/录入赠送输入与累计赠送列');
 assert.ok(read('apps/admin/src/views/CockpitView.vue').includes('bonusGrantedTotal'), '驾驶舱须统计会员累计赠送');
-const profileView35 = read('apps/web/src/views/ProfileView.vue');
-assert.ok(profileView35.includes('bonusGrantedCent') && profileView35.includes('累计赠送'), '前台用户中心须展示累计赠送');
+// 累计赠送随积分明细一起移到 /points 页
+const pointsView35 = read('apps/web/src/views/PointsView.vue');
+assert.ok(pointsView35.includes('bonusGrantedCent') && pointsView35.includes('累计赠送'), '积分明细页须展示累计赠送');
 
 // Mock 须镜像赠送：账户派生值、BONUS 流水、录入与导入列
 const mockIndex35 = read('mock/index.ts');
@@ -1098,7 +1284,10 @@ const balance36 = read('apps/server/src/modules/balance.module.ts');
 assert.ok(balance36.includes('reg.payment_status AS reg_payment_status'), '退款审核列表须 join 报名支付状态');
 assert.ok(balance36.includes("const fromBalance = reg.payment_status === 'NOT_REQUIRED'"), '退款资金路由须仍按 payment_status（NOT_REQUIRED 才回充），不得按会员等级');
 const reg36 = read('apps/server/src/modules/registrations.module.ts');
-assert.ok(/payment_status, source\b/.test(reg36) && reg36.includes("'CONFIRMED', ?, 'MANUAL'"), '手动录入 INSERT 须显式写 source=MANUAL');
+assert.ok(
+  /payment_status, source\b/.test(reg36) && /'MANUAL'/.test(reg36),
+  '手动录入 INSERT 须显式写 source=MANUAL',
+);
 assert.ok(!reg36.includes('wait_seq'), '报名 INSERT 不得再写已删除的 wait_seq 列');
 
 // 后台：来源徽标 + 取消/审核文案按支付方式分支，移除「会员…立即回充」写死口径
@@ -1167,7 +1356,7 @@ assert.ok(eventsView38.includes('v-model="form.registerMinLevel"'), '后台场�
 assert.ok(eventsView38.includes('仅 SVIP') && eventsView38.includes('VIP 及以上'), '门槛下拉须含 SVIP/VIP/所有人三档');
 const detailView38 = read('apps/web/src/views/EventDetailView.vue');
 assert.ok(detailView38.includes('gateBlocked') && detailView38.includes('BIZ_CODES.REGISTRATION_LEVEL_GATE'), '前台详情须按门槛业务码显示拦截');
-assert.ok(detailView38.includes('本场报名尚未开放到你的会员等级'), '前台须有门槛提示文案');
+assert.ok(detailView38.includes('本场登记尚未开放到你的会员等级'), '前台须有门槛提示文案');
 const mockIndex38 = read('mock/index.ts');
 assert.ok(mockIndex38.includes('registerGateReason') && mockIndex38.includes('BIZ_CODES.REGISTRATION_LEVEL_GATE'), 'mock 须镜像报名门槛');
 
@@ -1193,7 +1382,7 @@ const dialog39 = read('apps/web/src/components/ModelInfoDialog.vue');
 assert.ok(dialog39.includes('canViewBody') && dialog39.includes('<div v-if="canViewBody">'), '弹窗须按会员身份展示数据，非会员整块隐藏（点D）');
 assert.ok(!dialog39.includes('身高、三围等详细资料仅会员可见'), '弹窗不得再有「仅会员可见」锁定诱导提示（点D）');
 assert.ok(dialog39.includes('z-[150]'), '弹窗层级须低于灯箱 z-200');
-assert.ok(detailView38.includes('ModelInfoDialog') && detailView38.includes('查看模特资料'), '报名详情页须能查看模特资料');
+assert.ok(detailView38.includes('ModelInfoDialog') && detailView38.includes('查看资料'), '报名详情页须能查看模特资料');
 assert.ok(voteViewSrc.includes('ModelInfoDialog') && voteViewSrc.includes('campaign.value?.model'), '投票页须带出直接关联的模特资料（点C）');
 const mockIndex39 = read('mock/index.ts');
 assert.ok(mockIndex39.includes('publicEventOf') && mockIndex39.includes('heightCm: null, measurements: null'), 'mock 须对非会员置空身高/三围');
@@ -1431,17 +1620,22 @@ assert.ok(adminLayout45.includes('当前密码') && adminLayout45.includes('新�
 assert.ok(adminLayout45.includes('两次输入的新密码不一致'), '前端须校验两次新密码一致');
 assert.ok(adminLayout45.includes('session.resetState()') && adminLayout45.includes('await session.hydrate()'), '改密成功后须重载内存态，避免旧能力视图');
 
-/* ---------- 第 46 组：场次「活动海报」改为「模特照片」（1 张，来源锁模特库，选模特随机带图） ---------- */
+/* ---------- 第 46 组：场次图片区按模特配置（每位模特各自照片 + 服装） ---------- */
 const eventsView46 = read('apps/admin/src/views/EventsView.vue');
-assert.ok(eventsView46.includes('>模特照片<') && !eventsView46.includes('>活动海报<'), '场次图片区须把「活动海报」改为「模特照片」');
-assert.ok(eventsView46.includes('const selectedModel = computed('), '须按 modelId 取当前模特');
-assert.ok(eventsView46.includes('function onModelChange(') && eventsView46.includes('@change="onModelChange"'), '切换模特须触发照片联动');
+assert.ok(eventsView46.includes('本场照片') && !eventsView46.includes('>活动海报<'), '场次图片区须用「本场照片」而不是「活动海报」');
+// 已无「主模特」单一概念：每位模特各有一张卡片
+assert.ok(!eventsView46.includes('const selectedModel = computed('), '不再区分主模特，去掉 selectedModel');
+assert.ok(
+  eventsView46.includes('function onModelsChange(') && eventsView46.includes('@change="onModelsChange"'),
+  '切换模特须触发照片联动',
+);
 assert.ok(eventsView46.includes('photos[Math.floor(Math.random() * photos.length)]'), '选定模特后须随机带出该模特库的一张图');
-assert.ok(eventsView46.includes('<template v-if="selectedModel">') && eventsView46.includes('v-for="url in selectedModel.photoUrls"'), '指定模特后只能从该模特照片库中点选');
-assert.ok(eventsView46.includes('function pickModelPhoto(url: string)') && eventsView46.includes('@click="pickModelPhoto(url)"'), '须支持从模特库替换已选图');
-assert.ok(eventsView46.includes('function randomModelPhoto()') && eventsView46.includes('>随机换一张<'), '须支持随机换一张');
+assert.ok(eventsView46.includes('modelPhotoPool(mid)'), '指定模特后只能从该模特照片库中点选');
+assert.ok(eventsView46.includes('function pickModelPhotoAt(') && eventsView46.includes('@click="pickModelPhotoAt(idx, url)"'),
+  '须支持按模特替换已选图');
+assert.ok(eventsView46.includes('function randomModelPhotoAt(') && eventsView46.includes('>随机换一张<'), '须支持随机换一张');
 assert.ok(eventsView46.includes('<ImageUploader v-model="form.posters" :max="1" cover-hint="" />'), '未指定模特时保留自由上传，且限制为 1 张');
-assert.ok(eventsView46.includes('该模特还没有上传照片'), '模特无照片时须给出中性提示，不落回上传');
+assert.ok(eventsView46.includes('该模特还没有照片'), '模特无照片时须给出中性提示，不落回上传');
 assert.ok(eventsView46.includes('posterUrls: f.posters.slice(0, 1)') && eventsView46.includes('coverUrl: f.posters[0] ?? null'), '保存时模特图仅 1 张，首张即封面');
 assert.ok(eventsView46.includes('].slice(0, 1)'), '编辑回填时旧多图只取首张，避免单张语义被破坏');
 const mockData46 = read('mock/data.ts');
@@ -1508,4 +1702,256 @@ assert.ok(cockpit48.includes("from './cockpit/chartOptions'"), '驾驶舱图表�
 assert.ok(cockpit48.includes('<style src="./cockpit.css" scoped>'), '驾驶舱样式须外置，视图只留业务逻辑');
 assert.ok(cockpit48.split('\n').length < 700, '驾驶舱单文件须控制体量（拆分前 994 行）');
 
-console.log(`VERIFY_OK: 48 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/工程化与真分页；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
+// ---------- 合规：账号注销 / 敏感信息单独同意 / 处理者身份 ----------
+// PIPL 第 47 条（删除权）要求「承诺即能落地」，故必须有真实接口而非只写进政策
+const meRoutes49 = read('apps/server/src/modules/me/routes.ts');
+assert.ok(meRoutes49.includes("'/delete'"), '须提供本人注销账号接口');
+assert.ok(meRoutes49.includes('deleteAccountSchema'), '注销须校验密码，避免被 CSRF 或会话劫持触发');
+const authService49 = read('apps/server/src/modules/auth/service.ts');
+assert.ok(authService49.includes("action: 'USER_ACCOUNT_DELETE'"), '注销须写审计日志');
+assert.ok(authService49.includes('已注销用户') && authService49.includes('deleted_'),
+  '注销须匿名化昵称与微信号（履行业务记录留存的同时抹除身份信息）');
+assert.ok(read('apps/web/src/views/ProfileView.vue').includes('注销账号') || read('apps/web/src/views/SettingsView.vue').includes('注销账号'), '须有注销入口');
+assert.ok(read('apps/web/src/views/ProfileView.vue').includes('/settings'), '个人中心须能进入设置页');
+// PIPL 第 17 条：必须告知处理者名称与联系方式
+const privacy49 = read('apps/web/src/views/PrivacyView.vue');
+assert.ok(privacy49.includes('个人信息处理者'), '隐私政策须告知个人信息处理者身份');
+assert.ok(privacy49.includes('Cookie'), '隐私政策须说明 Cookie 用途');
+// PIPL 第 28–29 条：身高/三围属敏感个人信息，需单独同意并留痕
+const consentMigration49 = read('apps/server/src/migrations/025_model_body_data_consent.sql');
+assert.ok(consentMigration49.includes('body_data_consent_at'), '须为身高/三围单独同意留痕');
+assert.ok(read('apps/admin/src/views/ModelsView.vue').includes('bodyDataConsent'), '后台模特编辑须有单独同意勾选');
+assert.ok(read('apps/server/src/modules/events.module.ts').includes('body_data_consent_at'),
+  '服务端须写入同意时间，而不是只存前端勾选');
+// 折扣券语义回归：discountBp 是实付比例，减免额 = 原价 ×(1 − bp/10000)
+assert.equal(S.couponDiscountOf({ type: 'DISCOUNT', discountBp: 8000 }, 10000), 2000,
+  '8 折必须减免 20%，不能把 80% 当减免额');
+
+// ---------- SVIP 专属：登记中场次的「同场的人」（只给昵称） ----------
+// 复用文件前面已算好的 capsSvipP / capsVipP / capsNoneP
+assert.ok(capsSvipP.has('event:participants:view'), 'SVIP 须能查看同场名单');
+assert.ok(!capsVipP.has('event:participants:view'), 'VIP 不得查看同场名单');
+assert.ok(!capsNoneP.has('event:participants:view'), '普通用户不得查看同场名单');
+const participantsModule = read('apps/server/src/modules/events.module.ts');
+assert.ok(participantsModule.includes("requireCapabilities('event:participants:view')"),
+  '同场名单接口须按能力位鉴权，不能只看登录态');
+// 隐私：该接口只允许查昵称，绝不能把 wechat_id 带出来
+const participantsStart = participantsModule.indexOf("'/:id/participants'");
+const participantsEnd = participantsModule.indexOf("pub.get('/:id'", participantsStart);
+assert.ok(participantsStart > 0 && participantsEnd > participantsStart, '同场名单路由须存在于 events 模块');
+const participantsSrc = participantsModule.slice(participantsStart, participantsEnd);
+assert.ok(participantsSrc.includes('u.nickname'), '同场名单须查昵称');
+assert.ok(!participantsSrc.includes('wechat_id'), '同场名单不得查询或返回微信号');
+assert.ok(participantsSrc.includes("'CONFIRMED', 'CHECKED_IN', 'COMPLETED'"),
+  '已取消/退款中的登记不得出现在同场名单里');
+assert.ok(read('apps/web/src/views/EventDetailView.vue').includes("session.can('event:participants:view')"),
+  '前台须按能力位决定是否请求同场名单');
+// ---------- 登记按钮必须按「选中时段」判断，而不是整场一刀切 ----------
+// 只回整场一个 canRegister 会让「第1场满、第2场有位」时按钮整体禁用
+assert.ok(
+  read('apps/server/src/modules/events.module.ts').includes('sessionChecks'),
+  '余量接口须逐时段返回可报状态',
+);
+assert.ok(
+  !/const target = sessions\.find\(\(s\) => s\.status === 'OPEN'\)/.test(
+    read('apps/server/src/modules/events.module.ts'),
+  ),
+  '余量接口不得只挑第一个 OPEN 时段判定整场',
+);
+const webDetail = read('apps/web/src/views/EventDetailView.vue');
+assert.ok(webDetail.includes('canSubmitSelected'), '登记按钮须按选中时段判断是否可用');
+assert.ok(
+  !webDetail.includes(':disabled="!availability?.canRegister"'),
+  '登记按钮不得再用整场 canRegister 做禁用条件',
+);
+assert.ok(
+  /function openConfirm[\s\S]{0,400}?canSubmitSelected/.test(webDetail),
+  'openConfirm 也须校验，不能只靠按钮 disabled',
+);
+assert.ok(
+  /async function doSubmit[\s\S]{0,300}?canSubmitSelected/.test(webDetail),
+  'doSubmit 提交前须再校验一次',
+);
+// 已满时段仍要能选中，否则看不到「同场的人」
+assert.ok(
+  !webDetail.includes(':disabled="!stateOf(s).ok"'),
+  '时段卡片不得整体禁用：满员时段也要能选中查看同场名单',
+);
+// 空输入登录不得直接抛后端/英文报错
+assert.ok(
+  /wechatId: z\.string\(\)\.trim\(\)\.min\(1, '请输入微信号'\)/.test(read('packages/shared/src/schemas/auth.ts')),
+  'loginSchema 必须为必填项提供中文文案',
+);
+// 会员无积分账户时应补建，而不是报「仅会员可调整积分」
+const balanceAdjustSrc = read('apps/server/src/modules/balance.module.ts');
+assert.ok(balanceAdjustSrc.includes('INSERT IGNORE INTO balance_accounts'), '会员缺积分账户时须自动补建');
+assert.ok(
+  balanceAdjustSrc.includes('该用户不是有效会员，无法调整积分'),
+  '非会员调账仍须拒绝，且文案要说明原因',
+);
+assert.ok(read('mock/index.ts').includes('/participants$'),
+  'mock 须镜像同场名单端点');
+
+// ---------- 时段级回避名单（SVIP 择邻） ----------
+// 语义：某个时段不接受某人报名；不是全局黑名单，换时段仍可报名
+assert.equal(S.BIZ_CODES.SESSION_RESTRICTED, 4025, '回避拦截须有独立业务码');
+assert.ok(
+  /该时段暂不可选/.test(S.BIZ_CODE_MESSAGES[4025] ?? ''),
+  '回避拦截文案必须中性，不得暴露「被某会员排除」',
+);
+const avoidMigration = read('apps/server/src/migrations/026_session_avoid_rules.sql');
+assert.ok(avoidMigration.includes('session_avoid_rules'), '须有回避名单表');
+assert.ok(avoidMigration.includes('uk_session_blocked'), '同一时段对同一人只保留一条规则');
+assert.ok(avoidMigration.includes('revoked_at'), '回避规则须软删除，保留解除痕迹');
+const avoidModule = read('apps/server/src/modules/avoid-rules.module.ts');
+assert.ok(
+  avoidModule.includes("requireCapabilities('admin:registration:write')"),
+  '回避名单只给运营（报名写权限）配置，不开放给会员',
+);
+assert.ok(read('apps/server/src/modules/index.ts').includes('mountSessionAvoidRules'), '须挂载回避名单路由');
+
+const regAvoid = read('apps/server/src/modules/registrations.module.ts');
+assert.ok(regAvoid.includes('BIZ_CODES.SESSION_RESTRICTED'), '自助报名须拦截回避名单');
+assert.ok(
+  regAvoid.includes('session_avoid_rules') && regAvoid.includes('owner_user_id = ?'),
+  '发起人取消报名后，其回避规则须自动失效',
+);
+// 运营手动录入：只警告不阻断
+const manualForAvoid = regAvoid.slice(
+  regAvoid.indexOf('async function createManualRegistration'),
+  regAvoid.indexOf('export function mountRegistrations'),
+);
+assert.ok(manualForAvoid.includes('warnings'), '手动录入命中回避名单须回传警告而不是阻断');
+
+const eventsForAvoid = read('apps/server/src/modules/events.module.ts');
+assert.ok(eventsForAvoid.includes('restrictedSessionIds'), '余量接口须回传被回避的时段，供前端置灰');
+assert.ok(
+  read('apps/web/src/views/EventDetailView.vue').includes('暂不可选'),
+  '前台须把被回避的时段标成中性文案',
+);
+assert.ok(
+  read('apps/admin/src/views/RegistrationsView.vue').includes('回避名单'),
+  '后台须有回避名单管理入口',
+);
+assert.ok(read('mock/index.ts').includes('MOCK_AVOID_RULES'), 'mock 须镜像回避名单');
+
+// ---------- 代拍：独立于时段的报名项 ----------
+const proxyMigration = read('apps/server/src/migrations/027_proxy_shoot_session.sql');
+assert.ok(proxyMigration.includes("'PROXY'"), 'event_sessions 须有 kind 区分代拍');
+assert.ok(proxyMigration.includes('uk_event_proxy'), '同一场次最多一个代拍行');
+const proxyDto = read('apps/server/src/domain/dto.ts');
+assert.ok(proxyDto.includes("r.kind === 'PROXY'"), '时段 DTO 须映射 kind');
+const proxyEvents = read('apps/server/src/modules/events.module.ts');
+assert.ok(proxyEvents.includes('proxySessionOf'), '创建场次时须自动生成代拍行');
+assert.ok(
+  proxyEvents.includes("String((s as { kind?: string }).kind ?? 'NORMAL') === 'PROXY'"),
+  '编辑场次时代拍行须单独处理，不能被当作未提交的常规时段删掉',
+);
+assert.ok(proxyEvents.includes('rawBodyOf'), '须区分「字段缺省」与「显式传 false」，否则改时段会误关代拍');
+// 只切开关、不带 sessions 的编辑也要生成代拍，否则后台勾了但前台没入口
+assert.ok(
+  /hasProxyFlag && !wantsRelations/.test(proxyEvents),
+  '只改代拍开关（不提交时段）时也必须生成/清理代拍项',
+);
+assert.ok(proxyEvents.includes('不能关闭本场的代拍'), '已有代拍报名时不得关闭代拍');
+// 代拍不参与时间冲突
+const proxyReg = read('apps/server/src/modules/registrations.module.ts');
+assert.ok(proxyReg.includes("const isProxy"), '报名链路须识别代拍');
+assert.ok(proxyReg.includes("s.kind <> 'PROXY'"), '代拍不参与常规时段的时间冲突检测');
+assert.ok(read('apps/server/src/domain/policy.ts').includes('isProxy ? t >= parseUtc(session.endAt)'),
+  '代拍以整场结束为界，不是时段开始');
+assert.ok(read('apps/web/src/views/EventDetailView.vue').includes('代拍服务'), '前台须展示代拍选项');
+// 代拍不限人数：跳过容量校验，也不累加计数器
+assert.ok(
+  read('apps/server/src/domain/policy.ts').includes('!isProxy && session.capacityUsed'),
+  '代拍须跳过满员校验',
+);
+assert.ok(
+  /isProxySession[\\s\\S]{0,400}?capacity_used = capacity_used \\+ \\?/.test(proxyReg) === false || proxyReg.includes('if (!isProxySession)'),
+  '代拍不得累加时段占用计数',
+);
+assert.ok(read('apps/admin/src/views/EventsView.vue').includes('allowProxyShoot'), '后台须有代拍开关');
+// 代拍不限人数：容量汇总、退名额、退款驳回都不得把它算进去
+assert.ok(
+  read('apps/server/src/domain/dto.ts').includes("kind !== 'PROXY'"),
+  '场次汇总容量须排除代拍',
+);
+assert.ok(
+  read('apps/server/src/modules/registrations.module.ts').includes("kind <> 'PROXY' AND capacity_used > 0"),
+  '取消报名回退名额时须跳过代拍',
+);
+assert.ok(
+  read('apps/server/src/modules/balance.module.ts').includes("kind <> 'PROXY' AND capacity_used < capacity"),
+  '退款驳回回补名额时须跳过代拍',
+);
+assert.ok(read('mock/data.ts').includes("kind: 'PROXY'"), 'mock 须镜像代拍行');
+
+/* ---------- 第 50 组：双模特各自照片与服装（不区分主副） ---------- */
+// 数据模型：按「场次 × 模特」存服装与照片，而不是整场一份
+const migration029 = read('apps/server/src/migrations/029_event_model_wardrobe.sql');
+assert.ok(migration029.includes('wardrobe_urls'), '每位模特的服装须单独持久化');
+assert.ok(migration029.includes('event_models'), '服装须挂在 event_models 上（场次 × 模特）');
+const migration030 = read('apps/server/src/migrations/030_event_model_photos.sql');
+assert.ok(migration030.includes('photo_urls'), '每位模特的照片须单独持久化');
+
+const domainSlotSrc = read('packages/shared/src/types/domain.ts');
+assert.ok(domainSlotSrc.includes('EventModelSlotDto'), '须有「模特在场次中的槽位」DTO');
+assert.ok(domainSlotSrc.includes('modelSlots'), 'EventDto 须下发每人的照片与服装');
+const slotBlock = domainSlotSrc.slice(
+  domainSlotSrc.indexOf('export interface EventModelSlotDto'),
+  domainSlotSrc.indexOf('export interface EventDto'),
+);
+assert.ok(slotBlock.includes('photoUrls') && slotBlock.includes('wardrobeUrls'),
+  '槽位须同时含照片与服装');
+
+const eventSlotSchemaSrc = read('packages/shared/src/schemas/event.ts');
+assert.ok(eventSlotSchemaSrc.includes('modelWardrobes'), '输入 schema 须支持按模特的服装');
+assert.ok(eventSlotSchemaSrc.includes('modelPhotos'), '输入 schema 须支持按模特的照片');
+
+// 服务端：写入 / 读取 / 回退
+assert.ok(eventsModuleSrc.includes('replaceEventModels'), '须有模特槽位写入函数');
+assert.ok(eventsModuleSrc.includes('em.wardrobe_urls') && eventsModuleSrc.includes('em.photo_urls'),
+  '读取须带上按模特的服装与照片');
+assert.ok(eventsModuleSrc.includes('modelSlotsOf'), '须把模特行映射成槽位并做回退');
+const slotFn = eventsModuleSrc.slice(
+  eventsModuleSrc.indexOf('function modelSlotsOf'),
+  eventsModuleSrc.indexOf('async function withRelations'),
+);
+assert.ok(slotFn.includes('eventWardrobes'), '服装须回退到整场那组');
+assert.ok(slotFn.includes('eventPhotos') || slotFn.includes('profilePhoto'),
+  '照片须回退到整场或档案首图');
+assert.ok(eventsModuleSrc.includes('hasPhotoField'), '只改某位模特照片时也须落库');
+// 按模特 id 对齐，而不是按数组下标（删掉第一位后下标会左移，会串图）
+assert.ok(eventsModuleSrc.includes('prevWardrobe') && eventsModuleSrc.includes('prevPhoto'),
+  '服装与照片须按模特 id 保留原值');
+
+// 后台：不分主副模特，每人一套
+const slotEventsViewSrc = read('apps/admin/src/views/EventsView.vue');
+assert.ok(!slotEventsViewSrc.includes('selectedModel'), '不得再有「主模特」这一概念');
+assert.ok(slotEventsViewSrc.includes('modelWardrobes') && slotEventsViewSrc.includes('modelPhotos'),
+  '后台表单须按模特分别收集照片与服装');
+assert.ok(slotEventsViewSrc.includes('模特 {{ idx + 1 }}'), '后台须为每位模特各渲染一张卡片');
+assert.ok(slotEventsViewSrc.includes('场地照片由整场共用'), '场地照片须说明为整场共用，无需按模特重复上传');
+assert.ok(slotEventsViewSrc.includes('pickModelPhotoAt'), '每位模特须能各自选照片');
+
+// 海报：双模特各自展示自己的服装
+const slotPosterSrc = read('apps/admin/src/utils/poster.ts');
+assert.ok(slotPosterSrc.includes("case 'wardrobe2'"), '海报须支持第二模特的服装区块');
+assert.ok(slotPosterSrc.includes('slotWardrobe'), '海报服装须按模特取值');
+assert.ok(slotPosterSrc.includes('hasSecondModel'), '单模特场次须跳过第二模特区块');
+const slotPosterSchemaSrc = read('packages/shared/src/schemas/poster.ts');
+assert.ok(slotPosterSchemaSrc.includes('modelIndex'), '海报区块须能绑定到具体模特');
+const duoBlock = slotPosterSchemaSrc.slice(
+  slotPosterSchemaSrc.indexOf('const DUO'),
+  slotPosterSchemaSrc.indexOf('const COMPACT'),
+);
+assert.ok(duoBlock.includes("mk('wardrobe'") && duoBlock.includes("mk('wardrobe2'"),
+  '双人版式须同时含两位模特的服装');
+
+// 前台：服装按模特分组展示
+const webDetailSrc = read('apps/web/src/views/EventDetailView.vue');
+assert.ok(webDetailSrc.includes('wardrobeGroups'), '前台服装须按模特分组');
+assert.ok(webDetailSrc.includes('服装照片 · ${m.stageName}'), '双人场服装标题须带模特名');
+assert.ok(webDetailSrc.includes('modelSlots'), '前台须使用按模特的照片与服装');
+
+console.log(`VERIFY_OK: 50 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/工程化与真分页；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);

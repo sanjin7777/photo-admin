@@ -11,6 +11,7 @@ import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import ImageUploader from '../components/ImageUploader.vue';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
+import AppPagination from '../components/AppPagination.vue';
 import { loadAllPages } from '../utils/loadAll';
 
 const ui = useUiStore();
@@ -42,7 +43,7 @@ const sceneColumns = [
 /** 按场地名分组：一个场地多个场景；地址取该场地首条场景（同场地应一致） */
 const groupedScenes = computed(() => {
   const map = new Map<string, { venue: string; address: string | null; rows: Array<Record<string, unknown>>; count: number }>();
-  for (const s of scenes.value) {
+  for (const s of pagedScenes.value) {
     const key = s.venue || '默认场地';
     let g = map.get(key);
     if (!g) { g = { venue: key, address: s.address ?? null, rows: [], count: 0 }; map.set(key, g); }
@@ -53,6 +54,33 @@ const groupedScenes = computed(() => {
 });
 /** 已有场地名，供新建场景时快速复用（datalist），避免同场地拼写不一致 */
 const venueNames = computed(() => [...new Set(scenes.value.map((s) => s.venue).filter(Boolean))]);
+
+/**
+ * 场景库用**前端分页**而非服务端分页。
+ *
+ * 原因：列表要按场地名分组渲染（一个场地多个场景），服务端分页会把同一场地
+ * 的场景切到不同页，分组被割裂；且 `venueNames`（新建弹窗的场地名复用提示）
+ * 需要全部数据。场景库总量很小（几十条），一次拉全再切页更合适。
+ */
+const page = ref(1);
+const pageSize = ref(20);
+const total = computed(() => scenes.value.length);
+const pagedScenes = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return scenes.value.slice(start, start + pageSize.value);
+});
+
+/** 分页组件回调（页码已由组件保证合法） */
+function goPageTo(next: number): void {
+  if (next === page.value) return;
+  page.value = next;
+}
+
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -78,8 +106,16 @@ const form = reactive({
   address: '',
   description: '',
   photos: [] as string[],
-  capacity: '',
+  /** el-input-number 需要 number | undefined；空值用 undefined 表示不填 */
+  capacity: undefined as number | undefined,
 });
+
+/** 场地名自动补全：复用已有场地名，避免同场地拼写不一致 */
+function suggestVenue(query: string, cb: (items: Array<{ value: string }>) => void): void {
+  const kw = query.trim().toLowerCase();
+  const all = venueNames.value.filter((v) => !kw || v.toLowerCase().includes(kw));
+  cb(all.map((v) => ({ value: v })));
+}
 
 function openCreate(): void {
   editingId.value = null;
@@ -88,7 +124,7 @@ function openCreate(): void {
   form.address = '';
   form.description = '';
   form.photos = [];
-  form.capacity = '';
+  form.capacity = undefined;
   dialogOpen.value = true;
 }
 
@@ -99,7 +135,7 @@ function openEdit(s: SceneDto): void {
   form.address = s.address ?? '';
   form.description = s.description ?? '';
   form.photos = [...(s.photoUrls ?? [])];
-  form.capacity = s.capacity == null ? '' : String(s.capacity);
+  form.capacity = s.capacity == null ? undefined : s.capacity;
   dialogOpen.value = true;
 }
 
@@ -200,44 +236,48 @@ async function remove(s: SceneDto): Promise<void> {
         <p class="text-sm text-slate-600">还没有场景档案</p>
         <p class="mt-1 text-xs text-slate-500">点右上角「+ 新增场景」，先填所属场地，再录入场景照片与信息</p>
       </div>
+
+      <AppPagination
+        :page="page"
+        :page-size="pageSize"
+        :total="total"
+        :hide-on-single-page="true"
+        :summary="`共 ${total} 个场景`"
+        @change="(p) => goPageTo(p)"
+        @size-change="(s) => changePageSize(s)"
+      />
     </div>
 
     <el-dialog v-model="dialogOpen" :title="editingId ? '编辑场景' : '新增场景'" width="min(680px, 94vw)" top="8vh" destroy-on-close>
-      <div class="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
+      <div class="max-h-[64vh] overflow-y-auto pr-1">
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">场地信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">所属场地 <i class="text-rose-500">*</i></span>
-              <input v-model="form.venue" list="scene-venue-names" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：猫爪社影棚（一个场地可挂多个场景）" />
-              <datalist id="scene-venue-names">
-                <option v-for="v in venueNames" :key="v" :value="v" />
-              </datalist>
-              <span class="mt-1 block text-xs text-slate-500">同一场地下的多个场景填相同场地名即可自动归组；可从已有场地名中选择。</span>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场景名称 <i class="text-rose-500">*</i></span>
-              <input v-model="form.name" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：A 厅 · 自然光棚" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">容纳人数（选填）</span>
-              <input v-model="form.capacity" type="number" min="1" max="1000" inputmode="numeric"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：20" />
-            </label>
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场地地址</span>
-              <input v-model="form.address" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：成都市武侯区…（可留空）" />
-            </label>
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场地简介 / 拍摄须知</span>
-              <textarea v-model="form.description" rows="3"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="自然光棚、可换景、停车方便…（可留空）"></textarea>
-            </label>
-            <div class="sm:col-span-2">
-              <p class="mb-1.5 text-xs font-medium text-slate-600">场地照片</p>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="所属场地" required>
+              <div class="w-full">
+                <el-autocomplete v-model="form.venue" :fetch-suggestions="suggestVenue"
+                  placeholder="例：猫爪社影棚（一个场地可挂多个场景）" clearable class="!w-full" />
+                <span class="mt-1 block text-xs text-slate-500">同一场地下的多个场景填相同场地名即可自动归组。</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="场景名称" required>
+              <el-input v-model="form.name" placeholder="例：A 厅 · 自然光棚" clearable />
+            </el-form-item>
+            <el-form-item label="容纳人数">
+              <el-input-number v-model="form.capacity" :min="1" :max="1000" controls-position="right"
+                placeholder="例：20" class="!w-40" />
+            </el-form-item>
+            <el-form-item label="场地地址">
+              <el-input v-model="form.address" placeholder="例：成都市武侯区…（可留空）" clearable />
+            </el-form-item>
+            <el-form-item label="场地简介">
+              <el-input v-model="form.description" type="textarea" :rows="3"
+                placeholder="自然光棚、可换景、停车方便…（可留空）" />
+            </el-form-item>
+            <el-form-item label="场地照片">
               <ImageUploader v-model="form.photos" :max="9" cover-hint="第一张用于场次详情页「场地」图区" />
-            </div>
-          </div>
+            </el-form-item>
+          </el-form>
         </section>
       </div>
 

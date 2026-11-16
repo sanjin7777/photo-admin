@@ -10,6 +10,7 @@ import {
   AppError,
   BIZ_CODES,
   canAll,
+  canAny,
   EVENT_VISIBILITIES,
   satisfiesVisibility,
   type Capability,
@@ -37,6 +38,30 @@ export function requireCapabilities(
       return;
     }
     if (!hasRequiredCapabilities(identity, required)) {
+      next(new AppError(BIZ_CODES.FORBIDDEN));
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * 任一能力即可（OR 语义）。
+ *
+ * 用于「多岗位共用同一个只读接口」：例如选人下拉 /admin/registrations/users，
+ * 运营用它录入报名、财务用它发起调账、管理员用它发券，三者权限位不同，
+ * 但都只需要「读到已注册用户的最小字段」，不必为每个岗位再开一个端点。
+ */
+export function requireAnyCapability(
+  ...required: Capability[]
+): (req: Request, res: Response, next: NextFunction) => void {
+  return (_req, _res, next) => {
+    const identity = getIdentity();
+    if (!identity) {
+      next(new AppError(BIZ_CODES.UNAUTHORIZED));
+      return;
+    }
+    if (!canAny(identity.capabilities, required)) {
       next(new AppError(BIZ_CODES.FORBIDDEN));
       return;
     }

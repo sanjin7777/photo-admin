@@ -8,6 +8,7 @@ import type {
   BalanceAccountDto,
   BalanceTransactionDto,
   EventDto,
+  EventModelSlotDto,
   EventPriceDto,
   EventSessionDto,
   MembershipDto,
@@ -68,6 +69,8 @@ export interface RegistrationRow extends RowDataPacket {
   session_capacity_used?: number | null;
   session_status?: string | null;
   session_sort_no?: number | null;
+  /** join 回填的时段类型：PROXY 表示这条报名是代拍 */
+  session_kind?: string | null;
   /** join coupons 回填的券面标题 */
   coupon_title?: string | null;
 }
@@ -94,6 +97,8 @@ export function sessionDtoOf(r: RowDataPacket): EventSessionDto {
     startAt: iso(r.start_at), endAt: iso(r.end_at),
     capacity: Number(r.capacity), capacityUsed: Number(r.capacity_used),
     status: r.status as EventSessionDto['status'], sort: Number(r.sort_no),
+    // 旧数据没有 kind 列值时按常规时段处理，避免 DTO 出现 undefined
+    kind: (r.kind === 'PROXY' ? 'PROXY' : 'NORMAL'),
   };
 }
 
@@ -113,6 +118,7 @@ export function joinedSessionDtoOf(r: RegistrationRow): EventSessionDto | null {
     capacity: Number(r.session_capacity ?? 0), capacityUsed: Number(r.session_capacity_used ?? 0),
     status: (r.session_status ?? 'OPEN') as EventSessionDto['status'],
     sort: Number(r.session_sort_no ?? 0),
+    kind: (r.session_kind === 'PROXY' ? 'PROXY' : 'NORMAL'),
   };
 }
 
@@ -125,13 +131,36 @@ export function eventDtoOf(
   model: ModelProfileDto | null = null,
   sessions: EventSessionDto[] = [],
   prices: EventPriceDto[] = [],
+  /**
+   * 本场次全部模特（含主模特，按 sort 排序）。
+   * 不传时回退成「只有主模特一个」，保证旧调用点与旧数据仍能正常返回。
+   */
+  models: ModelProfileDto[] = [],
+  /**
+   * 每位模特在本场次的服装图（与 models 同序）。
+   * 不传时统一回退到整场的 wardrobeUrls —— 与升级前的行为一致。
+   */
+  modelSlots: EventModelSlotDto[] = [],
 ): EventDto {
+  const modelList = models.length ? models : (model ? [model] : []);
+  const eventWardrobes = asUrlArray(r.wardrobe_urls);
+  const eventPosters = asUrlArray(r.poster_urls);
   const sorted = [...sessions].sort((a, b) => a.sort - b.sort);
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
+  /**
+   * 场次的 capacity / capacityUsed 只统计常规时段。
+   * 代拍不限人数、不占名额，把它算进来会让「5/24」这类汇总数字虚高，
+   * 后台场次列表的容量列与「名额/名单」弹窗都会显示错。
+   */
+  const normalSorted = sorted.filter((s) => s.kind !== 'PROXY');
+  const first = normalSorted[0] ?? sorted[0];
+  const last = normalSorted[normalSorted.length - 1] ?? sorted[sorted.length - 1];
   const publicPrice = prices.find((p) => p.level === 'PUBLIC');
-  const totalCapacity = sorted.length ? sorted.reduce((s, x) => s + x.capacity, 0) : Number(r.capacity);
-  const totalUsed = sorted.length ? sorted.reduce((s, x) => s + x.capacityUsed, 0) : Number(r.capacity_used);
+  const totalCapacity = normalSorted.length
+    ? normalSorted.reduce((s, x) => s + x.capacity, 0)
+    : Number(r.capacity);
+  const totalUsed = normalSorted.length
+    ? normalSorted.reduce((s, x) => s + x.capacityUsed, 0)
+    : Number(r.capacity_used);
 
   return {
     id: String(r.id), title: r.title, subtitle: r.subtitle ?? null,
@@ -141,7 +170,23 @@ export function eventDtoOf(
     venue: r.venue, scene: r.scene ?? null, notice: r.notice ?? null,
     ratioLabel: r.ratio_label ?? null, modelCount: Number(r.model_count ?? 1),
     allowProxyShoot: Boolean(r.allow_proxy_shoot), privateBookingNote: r.private_booking_note ?? null,
-    modelId: r.model_id ? String(r.model_id) : null, model,
+    // 主模特跟随关联表首项：model_id 列只是冗余，以 modelList[0] 为准更可靠
+    modelId: modelList[0]?.id ?? (r.model_id ? String(r.model_id) : null),
+    model: modelList[0] ?? model,
+    models: modelList,
+    /**
+     * 按模特拆的服装图。没传 modelSlots 时（旧调用点）统一回退整场 wardrobeUrls，
+     * 保证前端拿到的结构恒为「与 models 等长」，不必到处判空。
+     */
+    modelSlots: modelList.map((m, i) => ({
+      modelId: m.id,
+      photoUrls: modelSlots[i]?.photoUrls?.length
+        ? modelSlots[i]!.photoUrls
+        : eventPosters,
+      wardrobeUrls: modelSlots[i]?.wardrobeUrls?.length
+        ? modelSlots[i]!.wardrobeUrls
+        : eventWardrobes,
+    })),
     sceneId: r.scene_id ? String(r.scene_id) : null,
     registrationOpenAt: iso(r.registration_open_at), registrationCloseAt: iso(r.registration_close_at),
     startAt: first ? first.startAt : iso(r.start_at),
@@ -274,6 +319,9 @@ export function modelDtoOf(r: RowDataPacket, includeBody = false): ModelProfileD
     })).filter((s) => s.handle),
     portraitAuthStatus: r.portrait_auth_status,
     portraitAuthExpireAt: r.portrait_auth_expire_at ? iso(r.portrait_auth_expire_at) : null,
+    // 敏感个人信息（身高/三围）的单独同意留痕，仅后台可见
+    bodyDataConsentAt: r.body_data_consent_at ? iso(r.body_data_consent_at) : null,
+    bodyDataConsentNote: r.body_data_consent_note ?? null,
     createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
   };
 }

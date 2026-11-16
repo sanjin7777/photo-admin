@@ -8,6 +8,7 @@
 export * from './constants';
 export * from './labels';
 export * from './points';
+export * from './refund';
 export * from './legal';
 export * from './roles';
 export * from './capabilities';

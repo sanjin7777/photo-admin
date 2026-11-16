@@ -67,6 +67,11 @@ export const BIZ_CODES = {
   COUPON_NOT_ALLOWED: 4023,
   /** 当前处于人工分批报名阶段，尚未开放到该用户的会员等级 */
   REGISTRATION_LEVEL_GATE: 4024,
+  /**
+   * 该时段设置了回避名单，当前用户不可报名。
+   * 文案刻意中性：不提示「被某人排除」，避免造成会员之间的直接冲突。
+   */
+  SESSION_RESTRICTED: 4025,
 
   // 5xxx 服务
   INTERNAL_ERROR: 5001,
@@ -112,6 +117,8 @@ export const BIZ_CODE_MESSAGES: Readonly<Record<number, string>> = {
   [BIZ_CODES.COUPON_INVALID]: '优惠券不可用，请重新选择',
   [BIZ_CODES.COUPON_NOT_ALLOWED]: '该场次不可使用优惠券',
   [BIZ_CODES.REGISTRATION_LEVEL_GATE]: '当前报名尚未开放到你的会员等级',
+  // 中性文案：让被拦截的人换个时段就行，不要暴露「被谁排除」
+  [BIZ_CODES.SESSION_RESTRICTED]: '该时段暂不可选，请选择其他时段',
   [BIZ_CODES.LEDGER_MISMATCH]: '账本对账异常，操作已冻结',
   [BIZ_CODES.CAPACITY_BELOW_USED]: '容量不能小于已报名人数',
   [BIZ_CODES.INTERNAL_ERROR]: '服务异常',

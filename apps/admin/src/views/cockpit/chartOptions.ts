@@ -21,7 +21,7 @@ const tooltipBase = {
   extraCssText: 'box-shadow: 0 6px 24px rgba(0,0,0,0.5); border-radius: 8px;',
 };
 
-/** 分 → 元，保留最多两位小数；KPI 卡片与图表 tooltip 共用同一口径 */
+/** 台账单位（分）→ 积分数字，保留最多两位小数；KPI 卡片与图表 tooltip 共用同一口径 */
 export const fmtYuan = (cent: number): string => (cent / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 
 /** 金额轴缩写：超过 1 万元显示「x.x万」，避免 y 轴标签互相挤压 */
@@ -76,7 +76,7 @@ export function createTrendOption(trend: TrendBucket[]): EChartsCoreOption {
         const arr = params as Array<{ axisValue: string; seriesName: string; value: number; color: string }>;
         if (!arr?.length) return '';
         const lines = arr.map((p) => {
-          const val = p.seriesName === '实收金额' ? `¥${fmtYuan(p.value)}` : `${p.value} 名额`;
+          const val = p.seriesName === '实收金额' ? `${fmtYuan(p.value)} 积分` : `${p.value} 名额`;
           return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px"></span>${p.seriesName}：<b style="font-family:${MONO}">${val}</b>`;
         });
         return `<div style="font-weight:600;margin-bottom:4px">${arr[0].axisValue}</div>${lines.join('<br/>')}`;

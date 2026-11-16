@@ -6,6 +6,16 @@
 # 前置：已安装 Docker + Docker Compose 插件；已把整个 deploy 目录上传到服务器。
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# ---------------------------------------------------------------------------
+# 自愈：压缩包可能来自 Windows，tar 不一定保留 Unix 权限位。
+#   · .sh 缺 x  → 直接 ./deploy.sh 会 Permission denied
+#   · 目录缺 x  → nginx 进不去 public/web，表现为首页 403、/admin/ 500
+# 这里统一补一遍，用户用 bash deploy.sh 起步也能自愈。
+# ---------------------------------------------------------------------------
+find . -type d -exec chmod 755 {} + 2>/dev/null || true
+chmod +x ./*.sh 2>/dev/null || true
+
 # Compose 默认只读 .env；必须显式指定 --env-file，否则 ${...} 插值全部为空
 COMPOSE=(docker compose --env-file .env.production -f docker-compose.prod.yml)
 

@@ -5,12 +5,19 @@
 import {
   BIZ_CODES,
   FREE_CANCEL_BEFORE_HOURS,
+  refundAmountOf,
   satisfiesLevel,
   satisfiesVisibility,
   type BalanceTxnDirection,
   type EventVisibility,
   type MemberLevel,
 } from '@photo/shared';
+
+/**
+ * 退款金额计算已上收到 @photo/shared（`refund.ts`），前后端共用同一实现：
+ * 前端要在用户点「取消」之前就告知能退多少，若两端各写一份迟早会漂移。
+ */
+export { refundAmountOf };
 
 /** 账本内部操作 → 流水方向。SETTLE 与 DEBIT 都记为 OUT，但动的是不同余额桶。 */
 export type LedgerOp = 'FREEZE' | 'SETTLE' | 'UNFREEZE' | 'CREDIT' | 'DEBIT';
@@ -74,6 +81,8 @@ export interface RegisterableSession {
   endAt: string;
   capacity: number;
   capacityUsed: number;
+  /** PROXY = 代拍：不占用常规时段，按整场结束时间判断可否预约 */
+  kind?: string;
 }
 
 export interface RegistrationDecision {
@@ -94,16 +103,23 @@ export interface RegistrationInput {
   now?: Date;
 }
 
-/** 校验链顺序固定：活动状态/时间窗 → 可见性 → 人工报名门槛 → 余额（仅会员）→ 时段容量 */
+/**
+ * 校验链顺序固定：活动状态/时间窗 → 可见性 → 人工报名门槛 → 余额（仅会员）→ 时段容量
+ *
+ * 代拍（kind=PROXY）不按自身时间判断：它的 start_at 只是整场首场的开始时间，
+ * 代拍本身不受「必须在该时段开始前报名」的限制，只要整场还没结束就能约。
+ */
 export function decideRegistration(input: RegistrationInput): RegistrationDecision {
   const { event, session, level, priceCent, hasBalance, availableCent } = input;
   const t = (input.now ?? new Date()).getTime();
+  const isProxy = (session as { kind?: string }).kind === 'PROXY';
   if (
     event.status !== 'REGISTRATION_OPEN' ||
     session.status !== 'OPEN' ||
     t < parseUtc(event.registrationOpenAt) ||
     t >= parseUtc(event.registrationCloseAt) ||
-    t >= parseUtc(session.startAt)
+    // 代拍以「整场结束」为界，常规时段以「该时段开始」为界
+    (isProxy ? t >= parseUtc(session.endAt) : t >= parseUtc(session.startAt))
   ) {
     return { ok: false, reasonCode: BIZ_CODES.EVENT_NOT_OPEN };
   }
@@ -117,7 +133,8 @@ export function decideRegistration(input: RegistrationInput): RegistrationDecisi
   if (hasBalance && availableCent < (input.payableCent ?? priceCent)) {
     return { ok: false, reasonCode: BIZ_CODES.BALANCE_INSUFFICIENT };
   }
-  if (session.capacityUsed >= session.capacity) {
+  // 代拍不限人数：不占常规时段名额，跳过容量校验
+  if (!isProxy && session.capacityUsed >= session.capacity) {
     // 候补已下线：满员即拒绝。容量并发一致性由调用方的条件 UPDATE 兜底。
     return { ok: false, reasonCode: BIZ_CODES.EVENT_FULL };
   }
@@ -144,11 +161,6 @@ export function canCancel(
   now: Date = new Date(),
 ): boolean {
   return parseUtc(startAt) - now.getTime() >= freeCancelBeforeHours * 3_600_000;
-}
-
-export function refundAmountOf(feeCent: number, feeRatio: number): number {
-  if (feeRatio <= 0 || feeRatio >= 1) return Math.max(0, feeCent - Math.round(feeCent * feeRatio));
-  return Math.max(0, Math.round(feeCent * (1 - feeRatio)));
 }
 
 export function voteWindowOpen(openAt: string, closeAt: string, now: Date = new Date()): boolean {

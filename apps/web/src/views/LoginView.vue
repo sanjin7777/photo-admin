@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { loginSchema, registerSchema } from '@photo/shared';
 import { api, tokens } from '../api';
@@ -15,6 +15,16 @@ const mode = ref<'login' | 'register'>('login');
 const wechatId = ref(''); const nickname = ref(''); const password = ref('');
 const inviteCode = ref('');
 const agreed = ref(false);
+
+/**
+ * 空表单时按钮直接置灰，配合 submit 里的必填提示：
+ * 用户不会点了按钮才看到报错，也避免把「表单校验未通过」这种系统文案暴露出来。
+ */
+const canSubmit = computed(() =>
+  mode.value === 'login'
+    ? Boolean(wechatId.value.trim() && password.value)
+    : Boolean(wechatId.value.trim() && password.value && nickname.value.trim() && inviteCode.value.trim() && agreed.value),
+);
 const router = useRouter(); const route = useRoute();
 const session = useSessionStore(); const ui = useUiStore();
 
@@ -42,6 +52,15 @@ async function submit(): Promise<void> {
     return;
   }
 
+  /**
+   * 空输入不要直接抛服务端校验错误。
+   *
+   * 先做一次「必填」提示：文案比 Zod 的 issues[0].message 更贴近用户当前动作，
+   * 也避免用户看到 1002「表单校验未通过」这种系统级措辞。
+   */
+  if (!wechatId.value.trim()) { ui.notify('请输入微信号', 'fail'); return; }
+  if (!password.value) { ui.notify('请输入密码', 'fail'); return; }
+
   const parsed = loginSchema.safeParse({ wechatId: wechatId.value, password: password.value });
   if (!parsed.success) { ui.notify(parsed.error.issues[0]?.message ?? '参数不合法', 'fail'); return; }
   try {
@@ -59,8 +78,8 @@ async function submit(): Promise<void> {
   <section class="safe-bottom mx-auto flex min-h-dvh max-w-md flex-col justify-center px-5 pb-10">
     <img src="/logo.jpg" alt="猫爪社摄影会" class="h-14 w-14 rounded-2xl object-cover ring-1 ring-brand/15" />
     <p class="mt-3 text-xs tracking-[0.35em] text-brand">猫爪社摄影会</p>
-    <h1 class="mt-2 text-3xl font-semibold tracking-tight text-slate-900">摄影会报名</h1>
-    <p class="mt-2 text-sm text-slate-500">用微信号登录，报名与会员权益都在这里</p>
+    <h1 class="mt-2 text-3xl font-semibold tracking-tight text-slate-900">摄影会登记</h1>
+    <p class="mt-2 text-sm text-slate-500">用微信号登录，活动登记与会员权益都在这里</p>
 
     <div class="mt-7 space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
       <div v-if="SHOW_REGISTER" class="flex gap-1 rounded-xl bg-slate-100 p-1 text-sm">
@@ -74,7 +93,8 @@ async function submit(): Promise<void> {
 
       <label class="block">
         <span class="mb-1 block text-xs text-slate-500">微信号</span>
-        <input v-model="wechatId" class="field" placeholder="字母开头，6–20 位，如 catpaw_user" autocomplete="username" />
+        <input v-model="wechatId" class="field" placeholder="字母开头，6–20 位，如 catpaw_user" autocomplete="username"
+          @keyup.enter="submit" />
       </label>
       <template v-if="mode === 'register'">
         <label class="block">
@@ -89,10 +109,13 @@ async function submit(): Promise<void> {
       </template>
       <label class="block">
         <span class="mb-1 block text-xs text-slate-500">密码</span>
-        <input v-model="password" type="password" class="field" placeholder="至少 8 位，含字母与数字" autocomplete="current-password" />
+        <input v-model="password" type="password" class="field" placeholder="至少 8 位，含字母与数字" autocomplete="current-password"
+          @keyup.enter="submit" />
       </label>
 
-      <button class="btn-primary w-full" @click="submit">{{ mode === 'login' ? '登录' : '注册' }}</button>
+      <button class="btn-primary w-full" :disabled="!canSubmit" @click="submit">
+        {{ mode === 'login' ? '登录' : '注册' }}
+      </button>
 
       <label v-if="mode === 'register'" class="flex items-start gap-2 text-xs leading-relaxed text-slate-500">
         <input v-model="agreed" type="checkbox" class="mt-0.5 h-3.5 w-3.5 shrink-0 accent-brand" />
@@ -105,8 +128,8 @@ async function submit(): Promise<void> {
       </label>
 
       <p class="text-xs leading-relaxed text-slate-500">
-        微信号是唯一登录标识。账号由管理员开通，如需报名请先联系客服。
-        积分仅 VIP / SVIP 具备（1 积分抵 1 元），普通用户报名走线下支付。
+        微信号是唯一登录标识。账号由管理员开通，如需参加活动请先联系客服。
+        积分仅 VIP / SVIP 会员具备，用于登记时结算活动权益。
       </p>
     </div>
 

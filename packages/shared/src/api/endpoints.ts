@@ -9,11 +9,15 @@ export const ENDPOINTS = {
     capabilities: '/me/capabilities',
     /** 本人改密：放在 /me 下而非 /auth，access token 过期时可正常走 refresh 重放 */
     password: '/me/password',
+    /** 本人注销账号：软删除 + 匿名化，需再次输入密码 */
+    deleteAccount: '/me/delete',
   },
   events: {
     list: '/events',
     detail: (id: string) => `/events/${id}`,
     availability: (id: string) => `/events/${id}/availability`,
+    /** SVIP 专属：登记中场次的已登记昵称名单 */
+    participants: (id: string) => `/events/${id}/participants`,
   },
   registrations: {
     create: '/registrations',
@@ -82,6 +86,9 @@ export const ENDPOINTS = {
     confirmPayment: (id: string) => `/admin/registrations/${id}/confirm-payment`,
     /** 现场批量签到 / 批量确认收款：一次提交多条，逐条校验状态机 */
     registrationBatch: '/admin/registrations/batch',
+    /** 时段级回避名单：运营配置「该时段不接受某人报名」 */
+    sessionAvoidRules: '/admin/avoid-rules',
+    sessionAvoidRuleRevoke: (id: string) => `/admin/avoid-rules/${id}/revoke`,
     refunds: '/admin/refunds',
     refundReview: (id: string) => `/admin/refunds/${id}/review`,
     /** 线下退款实际完成：补记经办人与时间（非会员退款的对账痕迹） */
@@ -112,6 +119,8 @@ export const ENDPOINTS = {
     uploads: '/admin/uploads',
     /** 场次海报配置（固定报名二维码）：GET 读取 / PUT 覆盖 */
     posterSettings: '/admin/settings/poster',
+    /** 海报版式（低代码设计器）：GET 读取 / PUT 保存，独立于二维码配置 */
+    posterLayout: '/admin/settings/poster/layout',
     /** 注册邀请码：批量生成 / 列表 / 作废 */
     inviteCodes: '/admin/invite-codes',
     inviteCodeRevoke: (id: string) => `/admin/invite-codes/${id}/revoke`,

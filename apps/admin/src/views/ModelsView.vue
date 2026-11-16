@@ -10,6 +10,7 @@ import { useUiStore } from '../stores/ui';
 import { useSessionStore } from '../stores/session';
 import ImageUploader from '../components/ImageUploader.vue';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
+import AppPagination from '../components/AppPagination.vue';
 import { SOCIAL_PLATFORM } from '../utils/labels';
 import { emptyPage, loadAllPages } from '../utils/loadAll';
 
@@ -21,28 +22,63 @@ const loading = ref(true);
 
 const platformOptions = SOCIAL_PLATFORMS.map((p) => ({ value: p, label: SOCIAL_PLATFORM[p] ?? p }));
 
+/* ---------------- 列表：服务端分页 ---------------- */
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
+
+/** 用户选项只需「全部可选账号」，与模特列表分页无关，保持全量 */
+async function loadUsers(): Promise<void> {
+  // 需要「授予会员」权限；运营/财务没有该权限，不调用，避免 3001
+  if (!session.can('admin:membership:grant')) {
+    users.value = [];
+    return;
+  }
+  try {
+    const u = await loadAllPages((p, size) => api.admin.members.list({ page: p, pageSize: size }));
+    users.value = u.list ?? [];
+  } catch {
+    users.value = [];
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    // 用户列表需要「授予会员」权限；运营/财务没有该权限，不调用，避免 3001
-    // 服务端单页上限 100：按页拉全量，避免旧模特在列表/下拉里直接消失
-    const [m, u] = await Promise.all([
-      loadAllPages((page, pageSize) => api.admin.models.list({ page, pageSize }))
-        .catch(() => emptyPage<ModelProfileDto>()),
-      session.can('admin:membership:grant')
-        ? loadAllPages((page, pageSize) => api.admin.members.list({ page, pageSize }))
-            .catch(() => emptyPage<AdminUserListItemDto>())
-        : Promise.resolve(emptyPage<AdminUserListItemDto>()),
-    ]);
-    models.value = m.list ?? [];
-    users.value = u.list ?? [];
+    const res = await api.admin.models.list({ page: page.value, pageSize: pageSize.value });
+    // 页码越界（例如删掉最后一页的唯一一条）时回到最后一页重查
+    const lastPage = Math.max(1, Math.ceil(res.total / pageSize.value));
+    if (page.value > lastPage) {
+      page.value = lastPage;
+      return load();
+    }
+    models.value = res.list ?? [];
+    total.value = res.total;
   } catch {
     // 统一错误提示
   } finally {
     loading.value = false;
   }
 }
-onMounted(load);
+
+/** 分页组件回调（页码已由组件保证合法） */
+function goPageTo(next: number): void {
+  if (next === page.value) return;
+  page.value = next;
+  void load();
+}
+
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
+  void load();
+}
+
+onMounted(async () => {
+  await Promise.all([load(), loadUsers()]);
+});
 
 /** userId → 微信号：优先用服务端下发的绑定微信号，有用户列表时补充昵称 */
 const userLabel = computed(() => {
@@ -94,19 +130,26 @@ interface SocialDraft { platform: SocialPlatform; handle: string; url: string }
 const form = reactive({
   userId: '',
   stageName: '',
-  heightCm: '',
-  bustCm: '',
-  waistCm: '',
-  hipCm: '',
+  /** el-input-number 需要 number | undefined；undefined 表示未填写 */
+  heightCm: undefined as number | undefined,
+  bustCm: undefined as number | undefined,
+  waistCm: undefined as number | undefined,
+  hipCm: undefined as number | undefined,
   portfolioUrl: '',
   photos: [] as string[],
   portraitAuthStatus: 'GRANTED' as 'PENDING' | 'GRANTED' | 'EXPIRED' | 'REVOKED',
+  /** 敏感个人信息单独同意（身高/三围） */
+  bodyDataConsent: false,
+  bodyDataConsentNote: '',
 });
+/** 编辑态下服务端已有的同意留痕时间，仅用于展示 */
+const editingConsentAt = ref<string | null>(null);
 const socials = ref<SocialDraft[]>([]);
 
 /** 空串 → null（未填写）；其余转数字，越界/非法由 schema 兜底报错。
  *  type="number" 的 v-model 会被 Vue 自动转成 number，先 String 再 trim。 */
-const cmOrNull = (v: string | number): number | null => {
+/** 空值 → null（未填写）；其余转数字，越界/非法由 schema 兜底报错。 */
+const cmOrNull = (v: number | string | undefined | null): number | null => {
   const s = String(v ?? '').trim();
   return s === '' ? null : Number(s);
 };
@@ -115,13 +158,16 @@ function openCreate(): void {
   editingId.value = null;
   form.userId = '';
   form.stageName = '';
-  form.heightCm = '';
-  form.bustCm = '';
-  form.waistCm = '';
-  form.hipCm = '';
+  form.heightCm = undefined;
+  form.bustCm = undefined;
+  form.waistCm = undefined;
+  form.hipCm = undefined;
   form.portfolioUrl = '';
   form.photos = [];
   form.portraitAuthStatus = 'GRANTED';
+  form.bodyDataConsent = false;
+  form.bodyDataConsentNote = '';
+  editingConsentAt.value = null;
   socials.value = [];
   dialogOpen.value = true;
 }
@@ -130,13 +176,16 @@ function openEdit(m: ModelProfileDto): void {
   editingId.value = m.id;
   form.userId = m.userId ?? '';
   form.stageName = m.stageName;
-  form.heightCm = m.heightCm == null ? '' : String(m.heightCm);
-  form.bustCm = m.measurements?.bustCm == null ? '' : String(m.measurements.bustCm);
-  form.waistCm = m.measurements?.waistCm == null ? '' : String(m.measurements.waistCm);
-  form.hipCm = m.measurements?.hipCm == null ? '' : String(m.measurements.hipCm);
+  form.heightCm = m.heightCm ?? undefined;
+  form.bustCm = m.measurements?.bustCm ?? undefined;
+  form.waistCm = m.measurements?.waistCm ?? undefined;
+  form.hipCm = m.measurements?.hipCm ?? undefined;
   form.portfolioUrl = m.portfolioUrl ?? '';
   form.photos = [...(m.photoUrls ?? [])];
   form.portraitAuthStatus = m.portraitAuthStatus;
+  form.bodyDataConsent = m.bodyDataConsentAt != null;
+  form.bodyDataConsentNote = m.bodyDataConsentNote ?? '';
+  editingConsentAt.value = m.bodyDataConsentAt ?? null;
   socials.value = (m.socialAccounts ?? []).map((s) => ({
     platform: s.platform, handle: s.handle, url: s.url ?? '',
   }));
@@ -169,6 +218,8 @@ async function save(): Promise<void> {
     photoUrls: form.photos,
     socialAccounts: payloadSocials,
     portraitAuthStatus: form.portraitAuthStatus,
+    bodyDataConsent: form.bodyDataConsent,
+    bodyDataConsentNote: form.bodyDataConsent ? (form.bodyDataConsentNote.trim() || null) : null,
   });
   if (!parsed.success) { ui.notify(parsed.error.issues[0]?.message ?? '表单校验未通过', 'warning'); return; }
 
@@ -231,61 +282,82 @@ const selectableUsers = computed(() => {
       </template>
     </ResponsiveTable>
 
+    <AppPagination
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :hide-on-single-page="true"
+      :summary="`共 ${total} 位模特`"
+      @change="(p) => goPageTo(p)"
+      @size-change="(s) => changePageSize(s)"
+    />
+
     <el-dialog v-model="dialogOpen" :title="editingId ? '编辑模特' : '新增模特'" width="min(680px, 94vw)" top="8vh" destroy-on-close>
       <div class="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">基本信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">绑定登录账号（选填）</span>
-              <select v-if="!editingId" v-model="form.userId"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-                <option value="">不绑定账号（纯资料模特）</option>
-                <option v-for="u in selectableUsers" :key="u.id" :value="u.id">{{ u.wechatId }}（{{ u.nickname }}）</option>
-              </select>
-              <input v-else :value="form.userId ? (userLabel.get(form.userId) ?? form.userId) : '未绑定登录账号'" disabled
-                class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">模特名 <i class="text-rose-500">*</i></span>
-              <input v-model="form.stageName" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：犬了个牙" />
-            </label>
-            <div class="sm:col-span-2">
-              <p class="mb-1.5 text-xs font-medium text-slate-600">模特照片</p>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="绑定账号">
+              <el-select v-if="!editingId" v-model="form.userId" placeholder="不绑定账号（纯资料模特）"
+                clearable filterable class="!w-full">
+                <el-option v-for="u in selectableUsers" :key="u.id"
+                  :label="`${u.wechatId}（${u.nickname}）`" :value="u.id" />
+              </el-select>
+              <el-input v-else :model-value="form.userId ? (userLabel.get(form.userId) ?? form.userId) : '未绑定登录账号'"
+                disabled />
+            </el-form-item>
+            <el-form-item label="模特名" required>
+              <el-input v-model="form.stageName" placeholder="例：犬了个牙" clearable />
+            </el-form-item>
+            <el-form-item label="模特照片">
               <ImageUploader v-model="form.photos" :max="6" cover-hint="第一张用于详情页「模特」图区" />
-            </div>
-            <label class="block sm:col-span-2">
-              <span class="mb-1 block text-xs font-medium text-slate-600">作品集地址</span>
-              <input v-model="form.portfolioUrl" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="https://…（可留空）" />
-            </label>
-          </div>
+            </el-form-item>
+            <el-form-item label="作品集">
+              <el-input v-model="form.portfolioUrl" placeholder="https://…（可留空）" clearable />
+            </el-form-item>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-1 text-sm font-semibold text-slate-900">身体数据</h4>
           <p class="mb-3 text-xs text-amber-600">身高与三围属敏感信息，仅 VIP / SVIP 会员在前台可见；普通用户与游客看不到。留空表示不公开该项。</p>
-          <div class="grid gap-3 sm:grid-cols-4">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">身高 (cm)</span>
-              <input v-model="form.heightCm" type="number" min="100" max="250" inputmode="numeric"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：168" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">胸围 (cm)</span>
-              <input v-model="form.bustCm" type="number" min="50" max="200" inputmode="numeric"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="选填" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">腰围 (cm)</span>
-              <input v-model="form.waistCm" type="number" min="40" max="200" inputmode="numeric"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="选填" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">臀围 (cm)</span>
-              <input v-model="form.hipCm" type="number" min="50" max="200" inputmode="numeric"
-                class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="选填" />
-            </label>
-          </div>
+          <el-form label-width="96px" label-position="left">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <el-form-item label="身高 (cm)">
+                <el-input-number v-model="form.heightCm" :min="100" :max="250" controls-position="right"
+                  placeholder="例：168" class="!w-36" />
+              </el-form-item>
+              <el-form-item label="胸围 (cm)">
+                <el-input-number v-model="form.bustCm" :min="50" :max="200" controls-position="right"
+                  placeholder="选填" class="!w-36" />
+              </el-form-item>
+              <el-form-item label="腰围 (cm)">
+                <el-input-number v-model="form.waistCm" :min="40" :max="200" controls-position="right"
+                  placeholder="选填" class="!w-36" />
+              </el-form-item>
+              <el-form-item label="臀围 (cm)">
+                <el-input-number v-model="form.hipCm" :min="50" :max="200" controls-position="right"
+                  placeholder="选填" class="!w-36" />
+              </el-form-item>
+            </div>
+
+            <!-- 敏感个人信息（PIPL 第 28–29 条）：必须单独同意，不能藏在总同意里 -->
+            <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+              <el-checkbox v-model="form.bodyDataConsent">
+                已取得本人对身高 / 三围收录与会员端展示的<b>单独同意</b>
+              </el-checkbox>
+              <div v-if="form.bodyDataConsent" class="mt-2">
+                <el-input v-model="form.bodyDataConsentNote" maxlength="200" show-word-limit
+                  placeholder="同意方式留痕，例：2026-11-14 微信书面确认" />
+              </div>
+              <p v-else class="mt-1.5 text-xs text-amber-700">
+                未勾选时不应填写身高与三围；已填写的建议先删除或补取同意。
+              </p>
+              <p v-if="editingId && editingConsentAt" class="mt-1.5 text-xs text-slate-500">
+                当前留痕：{{ new Date(editingConsentAt).toLocaleString('zh-CN') }}
+              </p>
+            </div>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
@@ -297,20 +369,20 @@ const selectableUsers = computed(() => {
 
           <div v-if="socials.length" class="space-y-2">
             <div v-for="(s, i) in socials" :key="i" class="grid grid-cols-2 items-end gap-2 rounded-lg bg-slate-50 p-2.5 sm:grid-cols-12">
-              <label class="col-span-2 block sm:col-span-3">
+              <div class="col-span-2 sm:col-span-3">
                 <span class="mb-1 block text-xs text-slate-500">平台</span>
-                <select v-model="s.platform" class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm">
-                  <option v-for="p in platformOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
-                </select>
-              </label>
-              <label class="col-span-2 block sm:col-span-4">
+                <el-select v-model="s.platform" class="!w-full">
+                  <el-option v-for="p in platformOptions" :key="p.value" :label="p.label" :value="p.value" />
+                </el-select>
+              </div>
+              <div class="col-span-2 sm:col-span-4">
                 <span class="mb-1 block text-xs text-slate-500">账号 / ID</span>
-                <input v-model="s.handle" class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" placeholder="catpaw2026" />
-              </label>
-              <label class="col-span-2 block sm:col-span-4">
+                <el-input v-model="s.handle" placeholder="catpaw2026" />
+              </div>
+              <div class="col-span-2 sm:col-span-4">
                 <span class="mb-1 block text-xs text-slate-500">主页地址（选填）</span>
-                <input v-model="s.url" class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" placeholder="https://…" />
-              </label>
+                <el-input v-model="s.url" placeholder="https://…" />
+              </div>
               <div class="col-span-2 flex justify-end sm:col-span-1">
                 <el-button size="small" text type="danger" @click="removeSocial(i)">删</el-button>
               </div>
@@ -323,16 +395,17 @@ const selectableUsers = computed(() => {
 
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">肖像授权</h4>
-          <label class="block sm:w-1/2">
-            <span class="mb-1 block text-xs font-medium text-slate-600">授权状态</span>
-            <select v-model="form.portraitAuthStatus" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-              <option value="PENDING">待授权</option>
-              <option value="GRANTED">已授权</option>
-              <option value="EXPIRED">已过期</option>
-              <option value="REVOKED">已撤销</option>
-            </select>
-          </label>
-          <p class="mt-2 text-xs text-slate-500">仅记录凭证状态，实际授权书需线下签署留存。</p>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="授权状态">
+              <el-select v-model="form.portraitAuthStatus" class="!w-44">
+                <el-option label="待授权" value="PENDING" />
+                <el-option label="已授权" value="GRANTED" />
+                <el-option label="已过期" value="EXPIRED" />
+                <el-option label="已撤销" value="REVOKED" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <p class="text-xs text-slate-500">仅记录凭证状态，实际授权书需线下签署留存。</p>
         </section>
       </div>
 

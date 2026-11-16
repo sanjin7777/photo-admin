@@ -13,6 +13,7 @@ import { mountInviteCodes } from './invite-codes';
 import { mountCoupons } from './coupons.module';
 import { mountConsents } from './consents.module';
 import { mountPosterSettings, mountPublicSettings } from './settings';
+import { mountSessionAvoidRules } from './avoid-rules.module';
 
 export function mountDomainRoutes(app: Express): void {
   mountMemberships(app);
@@ -29,4 +30,5 @@ export function mountDomainRoutes(app: Express): void {
   mountConsents(app);
   mountPosterSettings(app);
   mountPublicSettings(app);
+  mountSessionAvoidRules(app);
 }

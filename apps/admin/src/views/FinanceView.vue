@@ -9,8 +9,10 @@ import { balanceAdjustmentSchema, labelOf, pointsToCent, BALANCE_BIZ_TYPES } fro
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import { useSessionStore } from '../stores/session';
-import { REFUND_STATUS, TXN_DIRECTION, metaOf, points, shortTime, yuan } from '../utils/labels';
+import { REFUND_STATUS, TXN_DIRECTION, metaOf, points, shortTime } from '../utils/labels';
 import { emptyPage } from '../utils/loadAll';
+import UserPicker from '../components/UserPicker.vue';
+import AppPagination from '../components/AppPagination.vue';
 
 const ui = useUiStore();
 const session = useSessionStore();
@@ -50,6 +52,29 @@ const refundDateFrom = ref('');
 const refundDateTo = ref('');
 const txnDateFrom = ref('');
 const txnDateTo = ref('');
+
+/**
+ * el-date-picker 的 daterange 只接受单个数组，而筛选逻辑用两个独立 ref。
+ * 这里用可写 computed 桥接：读时拼数组、写时拆回两个 ref，避免新增状态导致两处不同步。
+ */
+const refundDateRange = computed<string[] | null>({
+  get: () => (refundDateFrom.value && refundDateTo.value
+    ? [refundDateFrom.value, refundDateTo.value]
+    : null),
+  set: (v: string[] | null) => {
+    refundDateFrom.value = v?.[0] ?? '';
+    refundDateTo.value = v?.[1] ?? '';
+  },
+});
+const txnDateRange = computed<string[] | null>({
+  get: () => (txnDateFrom.value && txnDateTo.value
+    ? [txnDateFrom.value, txnDateTo.value]
+    : null),
+  set: (v: string[] | null) => {
+    txnDateFrom.value = v?.[0] ?? '';
+    txnDateTo.value = v?.[1] ?? '';
+  },
+});
 
 /** 列表已是服务端筛选后的结果，模板仍用 visibleRefunds/visibleTxns 这两个名字 */
 const visibleRefunds = computed(() => refunds.value);
@@ -119,6 +144,32 @@ function goTxnPage(next: number): void {
   void loadTxns();
 }
 
+/** 分页组件回调（页码已由组件保证合法） */
+function goRefundPageTo(next: number): void {
+  if (next === refundPage.value) return;
+  refundPage.value = next;
+  void loadRefunds();
+}
+
+function goTxnPageTo(next: number): void {
+  if (next === txnPage.value) return;
+  txnPage.value = next;
+  void loadTxns();
+}
+
+/** 切换每页条数：两处独立，各自回到第 1 页 */
+function changeRefundPageSize(size: number): void {
+  refundPageSize.value = size;
+  refundPage.value = 1;
+  void loadRefunds();
+}
+
+function changeTxnPageSize(size: number): void {
+  txnPageSize.value = size;
+  txnPage.value = 1;
+  void loadTxns();
+}
+
 /* ---------------- 退款审核 ---------------- */
 async function review(order: RefundOrderDto, approve: boolean): Promise<void> {
   // 退款渠道由报名支付方式决定，而非会员等级：积分支付才回充，线下支付（含会员线下付款）需线下退款
@@ -127,8 +178,8 @@ async function review(order: RefundOrderDto, approve: boolean): Promise<void> {
     await ui.confirm(
       approve
         ? (pointsRefund
-          ? `通过退款 ${yuan(order.amountCent)}？该报名为积分支付，通过后积分立即回充。`
-          : `通过退款 ${yuan(order.amountCent)}？该报名为线下支付，通过后请线下退款，系统不回充积分。`)
+          ? `通过退款 ${points(order.amountCent)}？该报名为积分支付，通过后积分立即回充。`
+          : `通过退款 ${points(order.amountCent)}？该报名为线下支付，通过后请线下退款，系统不回充积分。`)
         : `驳回该退款申请？报名会回到「已确认」，名额继续保留。`,
       approve ? '确认通过退款' : '确认驳回',
     );
@@ -156,7 +207,7 @@ function refundChannel(r: RefundOrderDto): { label: string; cls: string } {
  * 资金落定状态（对账口径）：
  *  · 会员回充在审核通过时由服务端自动写入 settledAt，无需人工登记；
  *  · 非会员线下退款审核通过后 settledAt 仍为空，说明钱还没退出去，列表里要显式标出来，
- *    运营实际转账后点「登记已退款」补记经办人与时间。
+ *    运营实际转账后点「登记已处理」补记经办人与时间。
  */
 function settleStateOf(r: RefundOrderDto): { label: string; cls: string } | null {
   if (r.status !== 'REFUNDED') return null;
@@ -174,7 +225,7 @@ const settling = ref('');
 async function settle(order: RefundOrderDto): Promise<void> {
   try {
     await ui.confirm(
-      `确认已向「${order.requesterWechatId ?? `用户 #${order.requestedBy}`}」线下退款 ${yuan(order.amountCent)}？登记后计入资金落定，仅用于对账留痕。`,
+      `确认已向「${order.requesterWechatId ?? `用户 #${order.requestedBy}`}」线下退款 ${points(order.amountCent)}？登记后计入资金落定，仅用于对账留痕。`,
       '登记线下退款完成',
     );
   } catch { return; }
@@ -229,8 +280,8 @@ async function submitAdjust(): Promise<void> {
   <section>
     <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="text-xl font-semibold text-slate-900">财务与退款</h1>
-        <p class="mt-1 text-sm text-slate-500">积分仅站内记账，1 积分抵 1 元；积分变更全部落流水，不可直接改账户。</p>
+        <h1 class="text-xl font-semibold text-slate-900">积分与权益</h1>
+        <p class="mt-1 text-sm text-slate-500">积分为站内权益记录，不可购买、不可转让、不可兑现；所有变更落流水，不可直接改账户。</p>
       </div>
       <div class="flex gap-2">
         <el-button v-if="session.can('admin:balance:adjust:request')" type="primary" @click="openAdjust">发起调账</el-button>
@@ -238,39 +289,42 @@ async function submitAdjust(): Promise<void> {
     </div>
 
     <el-tabs v-model="tab">
-      <!-- 退款审核 -->
+      <!-- 取消登记审核 -->
       <el-tab-pane name="refunds">
         <template #label>
-          退款审核<span v-if="pendingTotal" class="ml-1 rounded-full bg-amber-100 px-1.5 text-[11px] text-amber-700">{{ pendingTotal }}</span>
+          取消审核<span v-if="pendingTotal" class="ml-1 rounded-full bg-amber-100 px-1.5 text-[11px] text-amber-700">{{ pendingTotal }}</span>
         </template>
-        <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
-          <select v-model="refundStatus" class="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-            <option value="">全部状态</option>
-            <option value="REQUESTED">待审核</option>
-            <option value="UNSETTLED">待线下退款（挂账）</option>
-            <option value="APPROVED">已通过</option>
-            <option value="REJECTED">已驳回</option>
-          </select>
-          <input v-model="refundKeyword" class="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-            placeholder="搜索微信号 / 场次 / 报名编号" />
+        <el-form inline class="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+          <el-form-item label="状态">
+            <el-select v-model="refundStatus" placeholder="全部状态" clearable class="!w-44">
+              <el-option label="待审核" value="REQUESTED" />
+              <el-option label="待线下确认" value="UNSETTLED" />
+              <el-option label="已通过" value="APPROVED" />
+              <el-option label="已驳回" value="REJECTED" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="关键词">
+            <el-input v-model="refundKeyword" placeholder="搜索微信号 / 场次 / 报名编号"
+              clearable class="!w-64" />
+          </el-form-item>
           <!-- 申请时间范围：按本地自然日（含首含尾） -->
-          <span class="flex items-center gap-1 text-xs text-slate-500">
-            <input v-model="refundDateFrom" type="date" :max="refundDateTo || undefined"
-              class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
-            <span class="text-slate-400">至</span>
-            <input v-model="refundDateTo" type="date" :min="refundDateFrom || undefined"
-              class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
-          </span>
-          <span class="text-xs text-slate-500">共 {{ refundTotal }} 条 · 第 {{ refundPage }} / {{ refundPageCount }} 页</span>
-        </div>
+          <el-form-item label="申请时间">
+            <el-date-picker v-model="refundDateRange" type="daterange" unlink-panels
+              range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期"
+              format="YYYY-MM-DD" value-format="YYYY-MM-DD" class="!w-64" />
+          </el-form-item>
+          <el-form-item>
+            <span class="text-xs text-slate-500">共 {{ refundTotal }} 条</span>
+          </el-form-item>
+        </el-form>
         <div class="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <table class="hidden w-full text-left text-sm md:table">
             <thead class="bg-slate-50 text-xs text-slate-500">
               <tr>
-                <th class="px-3 py-2.5 font-medium">退款单</th>
+                <th class="px-3 py-2.5 font-medium">申请单</th>
                 <th class="px-3 py-2.5 font-medium">申请人</th>
                 <th class="px-3 py-2.5 font-medium">场次 / 报名</th>
-                <th class="px-3 py-2.5 font-medium">金额</th>
+                <th class="px-3 py-2.5 font-medium">积分</th>
                 <th class="px-3 py-2.5 font-medium">申请时间</th>
                 <th class="px-3 py-2.5 font-medium">状态</th>
                 <th class="px-3 py-2.5 text-right font-medium">操作</th>
@@ -291,7 +345,7 @@ async function submitAdjust(): Promise<void> {
                   </p>
                 </td>
                 <td class="px-3 py-2.5 font-medium text-slate-900">
-                  {{ yuan(r.amountCent) }}
+                  {{ points(r.amountCent) }}
                   <p class="text-xs font-normal" :class="refundChannel(r).cls">{{ refundChannel(r).label }}</p>
                 </td>
                 <td class="px-3 py-2.5 text-xs text-slate-500">{{ shortTime(r.createdAt) }}</td>
@@ -308,15 +362,15 @@ async function submitAdjust(): Promise<void> {
                     <el-button size="small" text type="danger" @click="review(r, false)">驳回</el-button>
                   </template>
                   <el-button v-else-if="needSettle(r)" size="small" :loading="settling === r.id" @click="settle(r)">
-                    登记已退款
+                    登记已处理
                   </el-button>
                   <span v-else class="text-xs text-slate-300">—</span>
                 </td>
               </tr>
               <tr v-if="!loading && !visibleRefunds.length">
                 <td colspan="7" class="px-3 py-14 text-center">
-                  <p class="text-sm text-slate-600">{{ refunds.length ? '没有符合筛选条件的退款单' : '没有退款申请' }}</p>
-                  <p class="mt-1 text-xs text-slate-500">取消已支付报名后自动生成退款单：积分支付审核通过回充积分，线下支付审核通过后线下退款</p>
+                  <p class="text-sm text-slate-600">{{ refunds.length ? '没有符合筛选条件的申请单' : '没有取消申请' }}</p>
+                  <p class="mt-1 text-xs text-slate-500">取消已登记的记录后自动生成申请单：审核通过后积分回充账户</p>
                 </td>
               </tr>
             </tbody>
@@ -326,7 +380,7 @@ async function submitAdjust(): Promise<void> {
             <div v-for="r in visibleRefunds" :key="r.id" class="p-3">
               <div class="flex items-start justify-between">
                 <div>
-                  <p class="font-medium text-slate-900">#{{ r.id }} · {{ yuan(r.amountCent) }} <span class="text-xs font-normal" :class="refundChannel(r).cls">{{ refundChannel(r).label }}</span></p>
+                  <p class="font-medium text-slate-900">#{{ r.id }} · {{ points(r.amountCent) }} <span class="text-xs font-normal" :class="refundChannel(r).cls">{{ refundChannel(r).label }}</span></p>
                   <p class="mt-0.5 text-xs text-slate-500">{{ r.eventTitle ?? '场次未知' }} · {{ r.sessionLabel ?? '时段未知' }}</p>
                   <p class="mt-0.5 text-xs text-slate-500">报名 #{{ r.registrationId }} · {{ shortTime(r.createdAt) }}</p>
                 </div>
@@ -338,38 +392,44 @@ async function submitAdjust(): Promise<void> {
                 <el-button size="small" text type="danger" @click="review(r, false)">驳回</el-button>
               </div>
               <div v-else-if="needSettle(r)" class="mt-2">
-                <el-button size="small" :loading="settling === r.id" @click="settle(r)">登记已退款</el-button>
+                <el-button size="small" :loading="settling === r.id" @click="settle(r)">登记已处理</el-button>
               </div>
             </div>
           </div>
 
-          <div v-if="refundPageCount > 1" class="flex items-center justify-end gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
-            <el-button size="small" :disabled="refundPage <= 1" @click="goRefundPage(refundPage - 1)">上一页</el-button>
-            <span>第 {{ refundPage }} / {{ refundPageCount }} 页 · 共 {{ refundTotal }} 条</span>
-            <el-button size="small" :disabled="refundPage >= refundPageCount" @click="goRefundPage(refundPage + 1)">下一页</el-button>
-          </div>
+          <AppPagination
+            :page="refundPage"
+            :page-size="refundPageSize"
+            :total="refundTotal"
+            :hide-on-single-page="true"
+            :summary="`共 ${refundTotal} 条`"
+            @change="(p) => goRefundPageTo(p)"
+            @size-change="(s) => changeRefundPageSize(s)"
+          />
         </div>
       </el-tab-pane>
 
       <!-- 积分流水 -->
       <el-tab-pane label="积分流水" name="txns">
-        <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
-          <select v-model="txnBizType" class="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-            <option value="">全部业务</option>
-            <option v-for="b in BALANCE_BIZ_TYPES" :key="b" :value="b">{{ labelOf(b) }}</option>
-          </select>
-          <input v-model="txnKeyword" class="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-            placeholder="搜索微信号 / 业务类型" />
+        <el-form inline class="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+          <el-form-item label="业务">
+            <el-select v-model="txnBizType" placeholder="全部业务" clearable class="!w-40">
+              <el-option v-for="b in BALANCE_BIZ_TYPES" :key="b" :label="labelOf(b)" :value="b" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="关键词">
+            <el-input v-model="txnKeyword" placeholder="搜索微信号 / 业务类型" clearable class="!w-64" />
+          </el-form-item>
           <!-- 流水时间范围：按本地自然日（含首含尾） -->
-          <span class="flex items-center gap-1 text-xs text-slate-500">
-            <input v-model="txnDateFrom" type="date" :max="txnDateTo || undefined"
-              class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
-            <span class="text-slate-400">至</span>
-            <input v-model="txnDateTo" type="date" :min="txnDateFrom || undefined"
-              class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
-          </span>
-          <span class="text-xs text-slate-500">共 {{ txnTotal }} 条 · 第 {{ txnPage }} / {{ txnPageCount }} 页</span>
-        </div>
+          <el-form-item label="流水时间">
+            <el-date-picker v-model="txnDateRange" type="daterange" unlink-panels
+              range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期"
+              format="YYYY-MM-DD" value-format="YYYY-MM-DD" class="!w-64" />
+          </el-form-item>
+          <el-form-item>
+            <span class="text-xs text-slate-500">共 {{ txnTotal }} 条</span>
+          </el-form-item>
+        </el-form>
         <div class="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <table class="hidden w-full text-left text-sm md:table">
             <thead class="bg-slate-50 text-xs text-slate-500">
@@ -378,7 +438,7 @@ async function submitAdjust(): Promise<void> {
                 <th class="px-3 py-2.5 font-medium">用户</th>
                 <th class="px-3 py-2.5 font-medium">业务</th>
                 <th class="px-3 py-2.5 font-medium">方向</th>
-                <th class="px-3 py-2.5 font-medium">金额</th>
+                <th class="px-3 py-2.5 font-medium">积分</th>
                 <th class="px-3 py-2.5 font-medium">时间</th>
               </tr>
             </thead>
@@ -418,11 +478,15 @@ async function submitAdjust(): Promise<void> {
             </div>
           </div>
 
-          <div v-if="txnPageCount > 1" class="flex items-center justify-end gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
-            <el-button size="small" :disabled="txnPage <= 1" @click="goTxnPage(txnPage - 1)">上一页</el-button>
-            <span>第 {{ txnPage }} / {{ txnPageCount }} 页 · 共 {{ txnTotal }} 条</span>
-            <el-button size="small" :disabled="txnPage >= txnPageCount" @click="goTxnPage(txnPage + 1)">下一页</el-button>
-          </div>
+          <AppPagination
+            :page="txnPage"
+            :page-size="txnPageSize"
+            :total="txnTotal"
+            :hide-on-single-page="true"
+            :summary="`共 ${txnTotal} 条`"
+            @change="(p) => goTxnPageTo(p)"
+            @size-change="(s) => changeTxnPageSize(s)"
+          />
         </div>
         <p class="mt-2 text-xs text-slate-500">
           方向说明：入账＝充值/发放增加可用积分；冻结（预扣）＝报名时先占用可用积分；解冻（退回）＝取消报名后退回可用积分；扣款（结算）＝活动结束正式出账。数值恒为正数，方向由标签表示。
@@ -433,28 +497,33 @@ async function submitAdjust(): Promise<void> {
 
     <!-- 发起调账（一步入账） -->
     <el-dialog v-model="adjustOpen" title="积分调账" width="min(520px, 94vw)" destroy-on-close>
-      <div class="space-y-3">
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">微信号 <i class="text-rose-500">*</i></span>
-          <input v-model="adjust.wechatId" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="用户管理列表里的微信号" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">积分（1 积分 = 1 元） <i class="text-rose-500">*</i></span>
-          <input v-model.number="adjust.amountPoints" type="number" step="0.01" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="正数为发放/充值，负数为扣减，不能为 0" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">赠送积分（选填）</span>
-          <input v-model.number="adjust.bonusPoints" type="number" step="0.01" min="0" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="充值赠送，单独记一笔「赠送积分」流水" />
-          <span class="mt-1 block text-xs text-slate-500">仅充值（正数金额）时可填；与本金一起进可用积分，永久有效。</span>
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">原因 <i class="text-rose-500">*</i></span>
-          <input v-model="adjust.reason" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="至少 2 个字，会写入审计日志" />
-        </label>
-        <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-          提交后立即入账并记一笔积分流水，动作写入审计日志（BALANCE_ADJUST），不可撤销；仅会员有积分账户。积分可由运营发放，也可按线下收款登记充值。
-        </p>
-      </div>
+      <el-form label-width="96px" label-position="left">
+        <el-form-item label="微信号" required>
+          <div class="w-full">
+            <UserPicker v-model="adjust.wechatId" placeholder="搜索并选择微信号或昵称" />
+            <span class="mt-1 block text-xs text-slate-500">仅可选已注册用户；未注册请先在「用户管理」新增。</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="积分" required>
+          <div class="w-full">
+            <el-input-number v-model="adjust.amountPoints" :step="1" :precision="2"
+              controls-position="right" class="!w-full" placeholder="正数发放 / 负数扣减" />
+            <span class="mt-1 block text-xs text-slate-500">正数为发放、负数为扣减，不能为 0。</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="赠送积分">
+          <div class="w-full">
+            <el-input-number v-model="adjust.bonusPoints" :min="0" :step="1" :precision="2"
+              controls-position="right" class="!w-full" placeholder="选填" />
+            <span class="mt-1 block text-xs text-slate-500">仅发放（正数）时可填；与发放额一起计入可用积分。</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="原因" required>
+          <el-input v-model="adjust.reason" placeholder="至少 2 个字，会写入审计日志" maxlength="200" show-word-limit />
+        </el-form-item>
+      </el-form>
+      <el-alert type="info" :closable="false"
+        title="提交后立即入账并记一笔积分流水，动作写入审计日志（BALANCE_ADJUST），不可撤销；仅会员有积分账户。积分可由运营发放，也可按线下收款登记充值。" />
       <template #footer>
         <div class="flex justify-end gap-2">
           <el-button @click="adjustOpen = false">取消</el-button>

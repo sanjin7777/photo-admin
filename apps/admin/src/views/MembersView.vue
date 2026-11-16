@@ -9,6 +9,7 @@ import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import { useSessionStore } from '../stores/session';
 import { MEMBER_LEVEL, metaOf, points, shortTime } from '../utils/labels';
+import AppPagination from '../components/AppPagination.vue';
 
 const ui = useUiStore();
 const session = useSessionStore();
@@ -56,6 +57,17 @@ function search(): void {
 }
 function goPage(next: number): void {
   page.value = Math.min(Math.max(1, next), pageCount.value);
+  void load();
+}
+/** 分页组件回调：直接跳到目标页（已由组件保证合法） */
+function goPageTo(next: number): void {
+  page.value = next;
+  void load();
+}
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
   void load();
 }
 onMounted(load);
@@ -409,7 +421,7 @@ async function downloadTemplate(): Promise<void> {
         <el-option label="SVIP" value="SVIP" />
       </el-select>
       <el-button size="small" @click="search">查询</el-button>
-      <span class="ml-auto text-xs text-slate-500">共 {{ total }} 人 · 第 {{ page }} / {{ pageCount }} 页</span>
+      <span class="ml-auto text-xs text-slate-500">共 {{ total }} 人</span>
     </div>
 
     <div class="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -488,52 +500,55 @@ async function downloadTemplate(): Promise<void> {
         <div v-if="!loading && !list.length" class="px-3 py-12 text-center text-sm text-slate-500">没有匹配的用户</div>
       </div>
 
-      <div v-if="pageCount > 1" class="flex items-center justify-end gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
-        <el-button size="small" :disabled="page <= 1" @click="goPage(page - 1)">上一页</el-button>
-        <span>第 {{ page }} / {{ pageCount }} 页 · 共 {{ total }} 人</span>
-        <el-button size="small" :disabled="page >= pageCount" @click="goPage(page + 1)">下一页</el-button>
-      </div>
+      <AppPagination
+        :page="page"
+        :page-size="pageSize"
+        :total="total"
+        :hide-on-single-page="true"
+        @change="(p) => goPageTo(p)"
+        @size-change="(s) => changePageSize(s)"
+      />
     </div>
 
     <!-- 授予弹窗 -->
     <el-dialog v-model="grantOpen" title="授予会员" width="min(520px, 94vw)" destroy-on-close>
-      <div class="space-y-3">
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">微信号 <i class="text-rose-500">*</i></span>
-          <input v-model="grant.wechatId" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="从上方列表点「授予」会自动带入" />
-        </label>
-        <div class="grid grid-cols-2 gap-3">
-          <label class="block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">会员等级</span>
-            <select v-model="grant.level" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-              <option value="VIP">VIP</option>
-              <option value="SVIP">SVIP</option>
-            </select>
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">同时入账积分（1 积分 = 1 元）</span>
-            <input v-model.number="grant.amountYuan" type="number" min="0" step="0.01" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="0 = 不入账" />
-          </label>
-        </div>
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">赠送积分（选填，1 积分 = 1 元）</span>
-          <input v-model.number="grant.bonusYuan" type="number" min="0" step="0.01" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="0 = 不赠送；单独记一笔「赠送积分」流水" />
-        </label>
-        <label class="flex items-center gap-2 text-xs text-slate-700">
-          <input v-model="grant.permanent" type="checkbox" /> 永久有效（不勾选则按下方天数计算）
-        </label>
-        <label v-if="!grant.permanent" class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">有效天数</span>
-          <input v-model.number="grant.days" type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-        </label>
-        <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">授予原因 <i class="text-rose-500">*</i></span>
-          <input v-model="grant.reason" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：线下办理年卡，会写入权限日志" />
-        </label>
-        <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-          授予后 session_version +1，该用户旧登录凭证立即失效；填了积分会同步记一笔积分流水，便于对账。
-        </p>
-      </div>
+      <el-form label-width="110px" label-position="left">
+        <el-form-item label="微信号" required>
+          <el-input v-model="grant.wechatId" placeholder="从上方列表点「授予」会自动带入" />
+        </el-form-item>
+        <el-form-item label="会员等级">
+          <el-select v-model="grant.level" class="!w-40">
+            <el-option label="VIP" value="VIP" />
+            <el-option label="SVIP" value="SVIP" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="同时发放积分">
+          <div class="w-full">
+            <el-input-number v-model="grant.amountYuan" :min="0" :step="1" :precision="2"
+              controls-position="right" class="!w-40" placeholder="0 = 不发放" />
+            <span class="ml-2 text-xs text-slate-500">积分</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="赠送积分">
+          <div class="w-full">
+            <el-input-number v-model="grant.bonusYuan" :min="0" :step="1" :precision="2"
+              controls-position="right" class="!w-40" placeholder="0 = 不赠送" />
+            <span class="ml-2 text-xs text-slate-500">单独记一笔「赠送积分」流水</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="有效期">
+          <el-checkbox v-model="grant.permanent">永久有效</el-checkbox>
+          <el-input-number v-if="!grant.permanent" v-model="grant.days" :min="1" :step="1"
+            controls-position="right" class="!ml-3 !w-28" />
+          <span v-if="!grant.permanent" class="ml-1 text-xs text-slate-500">天</span>
+        </el-form-item>
+        <el-form-item label="授予原因" required>
+          <el-input v-model="grant.reason" maxlength="200" show-word-limit
+            placeholder="例：线下办理年卡，会写入权限日志" />
+        </el-form-item>
+      </el-form>
+      <el-alert type="info" :closable="false"
+        title="授予后 session_version +1，该用户旧登录凭证立即失效；填了积分会同步记一笔积分流水，便于对账。" />
       <template #footer>
         <div class="flex justify-end gap-2">
           <el-button @click="grantOpen = false">取消</el-button>
@@ -547,50 +562,45 @@ async function downloadTemplate(): Promise<void> {
       <div class="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">账号信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">微信号 <i class="text-rose-500">*</i></span>
-              <input v-model="createForm.wechatId" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="字母开头 6–20 位，登录用" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">昵称 <i class="text-rose-500">*</i></span>
-              <input v-model="createForm.nickname" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="2–24 个字" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">初始密码 <i class="text-rose-500">*</i></span>
-              <input v-model="createForm.password" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="至少 8 位，含字母与数字" />
-            </label>
-          </div>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="微信号" required>
+              <el-input v-model="createForm.wechatId" placeholder="字母开头 6–20 位，登录用" />
+            </el-form-item>
+            <el-form-item label="昵称" required>
+              <el-input v-model="createForm.nickname" placeholder="2–24 个字" maxlength="24" />
+            </el-form-item>
+            <el-form-item label="初始密码" required>
+              <el-input v-model="createForm.password" type="password" show-password
+                placeholder="至少 8 位，含字母与数字" />
+            </el-form-item>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">会员与积分</h4>
-          <div class="grid gap-3 sm:grid-cols-3">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">会员等级</span>
-              <select v-model="createForm.level" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-                <option value="NONE">普通用户（无积分）</option>
-                <option value="VIP">VIP</option>
-                <option value="SVIP">SVIP</option>
-              </select>
-            </label>
-            <label v-if="createForm.level !== 'NONE'" class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">有效期至</span>
-              <input v-model="createForm.expireAt" type="date" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-              <span class="mt-1 block text-xs text-slate-500">留空 = 永久有效</span>
-            </label>
-            <label v-if="createForm.level !== 'NONE'" class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">初始积分（1 积分 = 1 元）</span>
-              <input v-model.number="createForm.balanceYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="0 表示不开户" />
-            </label>
-            <label v-if="createForm.level !== 'NONE'" class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">赠送积分（选填）</span>
-              <input v-model.number="createForm.bonusYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="0 = 不赠送" />
-            </label>
-          </div>
-          <p v-if="createForm.level === 'NONE'" class="mt-2 text-xs text-slate-500">
-            普通用户没有积分账户，报名走线下支付。需要积分请选 VIP / SVIP。
-          </p>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="会员等级">
+              <el-select v-model="createForm.level" class="!w-52">
+                <el-option label="普通用户（无积分）" value="NONE" />
+                <el-option label="VIP" value="VIP" />
+                <el-option label="SVIP" value="SVIP" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="createForm.level !== 'NONE'" label="有效期至">
+              <el-date-picker v-model="createForm.expireAt" type="date" placeholder="留空 = 永久有效"
+                format="YYYY-MM-DD" value-format="YYYY-MM-DD" clearable />
+            </el-form-item>
+            <el-form-item v-if="createForm.level !== 'NONE'" label="初始积分">
+              <el-input-number v-model="createForm.balanceYuan" :min="0" :step="1"
+                controls-position="right" class="!w-36" placeholder="0 = 不开户" />
+            </el-form-item>
+            <el-form-item v-if="createForm.level !== 'NONE'" label="赠送积分">
+              <el-input-number v-model="createForm.bonusYuan" :min="0" :step="1"
+                controls-position="right" class="!w-36" placeholder="0 = 不赠送" />
+            </el-form-item>
+          </el-form>
+          <el-alert v-if="createForm.level === 'NONE'" type="info" :closable="false"
+            title="普通用户没有积分账户，登记后由运营确认名额。需要积分请选 VIP / SVIP。" />
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
@@ -620,45 +630,39 @@ async function downloadTemplate(): Promise<void> {
       <div class="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">账号信息</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">微信号（登录标识，不可改）</span>
-              <input :value="editTarget?.wechatId" disabled class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">昵称</span>
-              <input v-model="editForm.nickname" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">账号状态</span>
-              <select v-model="editForm.status" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-                <option value="ACTIVE">正常</option>
-                <option value="FROZEN">冻结（禁止登录）</option>
-              </select>
-            </label>
-          </div>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="微信号">
+              <el-input :model-value="editTarget?.wechatId" disabled />
+            </el-form-item>
+            <el-form-item label="昵称">
+              <el-input v-model="editForm.nickname" maxlength="24" />
+            </el-form-item>
+            <el-form-item label="账号状态">
+              <el-select v-model="editForm.status" class="!w-52">
+                <el-option label="正常" value="ACTIVE" />
+                <el-option label="冻结（禁止登录）" value="FROZEN" />
+              </el-select>
+            </el-form-item>
+          </el-form>
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">会员与积分</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">会员等级</span>
-              <select v-model="editForm.level" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-                <option value="NONE">普通用户（无积分）</option>
-                <option value="VIP">VIP</option>
-                <option value="SVIP">SVIP</option>
-              </select>
-            </label>
-            <label v-if="editForm.level !== 'NONE'" class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">有效期至</span>
-              <input v-model="editForm.expireAt" type="date" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-              <span class="mt-1 block text-xs text-slate-500">留空 = 永久有效</span>
-            </label>
-          </div>
-          <p class="mt-2 text-xs text-slate-500">
-            改等级会结束当前会员记录并按新等级重建；积分账户不会被清空。
-          </p>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="会员等级">
+              <el-select v-model="editForm.level" class="!w-52">
+                <el-option label="普通用户（无积分）" value="NONE" />
+                <el-option label="VIP" value="VIP" />
+                <el-option label="SVIP" value="SVIP" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="editForm.level !== 'NONE'" label="有效期至">
+              <el-date-picker v-model="editForm.expireAt" type="date" placeholder="留空 = 永久有效"
+                format="YYYY-MM-DD" value-format="YYYY-MM-DD" clearable />
+            </el-form-item>
+          </el-form>
+          <el-alert type="info" :closable="false"
+            title="改等级会结束当前会员记录并按新等级重建；积分账户不会被清空。" />
         </section>
 
         <section class="rounded-xl border border-slate-200 p-4">
@@ -770,12 +774,8 @@ async function downloadTemplate(): Promise<void> {
         </div>
 
         <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-slate-50 px-3 py-2.5">
-          <label class="flex items-center gap-2 text-xs text-slate-700">
-            <input v-model="overwrite" type="checkbox" /> 覆盖已存在的会员（不勾选则跳过）
-          </label>
-          <label class="flex items-center gap-2 text-xs text-slate-700">
-            <input v-model="strict" type="checkbox" /> 严格模式（任一行失败整批回滚）
-          </label>
+          <el-checkbox v-model="overwrite">覆盖已存在的会员（不勾选则跳过）</el-checkbox>
+          <el-checkbox v-model="strict">严格模式（任一行失败整批回滚）</el-checkbox>
           <span v-if="preview.error" class="text-xs text-rose-600">{{ preview.error }} 行有错误将被跳过</span>
         </div>
       </div>

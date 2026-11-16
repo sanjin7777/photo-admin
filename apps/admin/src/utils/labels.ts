@@ -87,6 +87,8 @@ export const AUDIT_ACTION: Record<string, string> = {
   SCENE_UPSERT: '维护场景', SCENE_DELETE: '删除场景',
   INVITE_CODE_CREATE: '生成邀请码', INVITE_CODE_REVOKE: '作废邀请码',
   COUPON_ISSUE: '发放优惠券', COUPON_REVOKE: '作废优惠券',
+  USER_ACCOUNT_DELETE: '注销账号',
+  SESSION_AVOID_RULE_UPSERT: '设置回避名单', SESSION_AVOID_RULE_REVOKE: '解除回避名单',
 };
 
 /** 审计对象类型也常以英文出现在表格里，统一翻译 */
@@ -113,13 +115,12 @@ export function metaOf(table: Record<string, Meta>, key: string | null | undefin
   return table[key] ?? { label: key, cls: FALLBACK.cls };
 }
 
-/** 分 → 元，整数不显示小数，避免 ¥189.00 这种冗余 */
-export function yuan(cent: number | null | undefined): string {
-  if (cent == null) return '—';
-  return `¥${(cent / 100).toFixed(cent % 100 === 0 ? 0 : 2)}`;
-}
-
-/** 账本单位（分）→ 积分文本，1 积分 = 1 元 */
+/**
+ * 台账单位（分）→ 积分文本。
+ *
+ * 站点已整体去货币化：后台不再出现「元 / ¥」，所有涉及金额的字段一律以「积分」呈现。
+ * 原来的 `yuan()` 已移除，避免有人误用回货币展示。
+ */
 export function points(cent: number | null | undefined): string {
   if (cent == null) return '—';
   return `${formatPoints(cent)} 积分`;
@@ -133,11 +134,16 @@ export function shortTime(iso: string | null | undefined): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** ISO → `YYYY-MM-DDTHH:mm`，用于 datetime-local 输入框 */
+/**
+ * ISO → `YYYY-MM-DDTHH:mm:ss`，用于 Element Plus 日期选择器的 v-model 初值。
+ *
+ * 必须带秒：`el-date-picker` 的 value-format 声明为 `YYYY-MM-DDTHH:mm:ss`，
+ * 传入不带秒的字符串会解析失败并显示为空（曾导致「新建场次默认时段时间为空」）。
+ */
 export function toLocalInput(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }

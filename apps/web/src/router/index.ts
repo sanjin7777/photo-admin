@@ -18,11 +18,17 @@ const router = createRouter({
       children: [
         { path: '', component: () => import('../views/EventsView.vue'), meta: { public: true, title: '场次' } },
         { path: 'events/:id', component: () => import('../views/EventDetailView.vue'), meta: { public: true, title: '场次详情' } },
-        { path: 'my', component: () => import('../views/MyRegistrationsView.vue'), meta: { title: '我的报名' } },
+        { path: 'my', component: () => import('../views/MyRegistrationsView.vue'), meta: { title: '我的登记' } },
+        /** 电子票根：登记成功后凭此到场核销 */
+        { path: 'tickets/:id', component: () => import('../views/TicketView.vue'), meta: { title: '电子票根' } },
         /** 投票入口仅 SVIP：capabilities 里 vote:cast 只在 SVIP 等级下发，守卫会拦下其他人 */
         { path: 'vote', component: () => import('../views/VoteListView.vue'), meta: { title: '服装投票', capabilities: ['vote:cast'] } },
         { path: 'vote/:id', component: () => import('../views/VoteView.vue'), meta: { title: '服装投票', capabilities: ['vote:cast'] } },
         { path: 'profile', component: () => import('../views/ProfileView.vue'), meta: { title: '个人中心' } },
+        /** 积分明细：从个人中心拆出，避免首页被流水撑长 */
+        { path: 'points', component: () => import('../views/PointsView.vue'), meta: { title: '积分明细' } },
+        /** 设置：改密 / 退出 / 注销集中一页，危险操作与常规浏览隔离 */
+        { path: 'settings', component: () => import('../views/SettingsView.vue'), meta: { title: '设置' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

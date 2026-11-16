@@ -65,12 +65,18 @@ async function reviewRefund(id: string, payload: RefundReviewPayload, actorId: s
       assertTransition(REFUND_TRANSITIONS, refund.status, 'REJECTED');
       // 申请退款时已把时段名额释放；驳回意味着用户继续参加，必须把名额补回同一时段。
       // 补不回（已被别人占用）则不能驳回，否则该报名将没有容量承载，形成超卖。
+      // 代拍不限人数、也不占名额，驳回时不需要（也不能）回补计数。
       if (reg.session_id) {
         const [cap] = await conn.execute<ResultSetHeader>(
-          'UPDATE event_sessions SET capacity_used = capacity_used + 1 WHERE id = ? AND capacity_used < capacity',
+          "UPDATE event_sessions SET capacity_used = capacity_used + 1 WHERE id = ? AND kind <> 'PROXY' AND capacity_used < capacity",
           [reg.session_id],
         );
-        if (cap.affectedRows !== 1) {
+        // 代拍被跳过更新是正常情况（affectedRows=0），不算满员
+        const [kindRows] = await conn.execute<RowDataPacket[]>(
+          'SELECT kind FROM event_sessions WHERE id = ?', [reg.session_id],
+        );
+        const isProxy = String(kindRows[0]?.kind ?? 'NORMAL') === 'PROXY';
+        if (cap.affectedRows !== 1 && !isProxy) {
           throw new AppError(BIZ_CODES.EVENT_FULL, '该时段名额已被占满，无法驳回退款；请先取消该报名或与用户协商');
         }
       }
@@ -326,10 +332,37 @@ export function mountBalance(app: Express): void {
       );
       const userId = users[0]?.id;
       if (userId == null) throw new AppError(BIZ_CODES.RESOURCE_NOT_FOUND, `微信号「${p.wechatId}」不存在`);
+
+      /**
+       * 会员账户自动补建。
+       *
+       * 历史上账户只在「授予会员」的事务里创建，于是出现两类残缺数据：
+       *   · 会员是早于该逻辑 / 由脚本直接写入 memberships 的 → 有会籍无账户
+       *   · 账户行被清理过但会籍还在
+       * 这两种情况下运营看到的都是「该用户没有积分账户（仅会员可调整积分）」，
+       * 但用户明明就是会员，属于把系统内部不一致暴露给了操作者。
+       *
+       * 现在改为：确认对方是**有效会员**就补建账户（幂等），非会员仍拒绝。
+       */
       const [accounts] = await conn.execute<RowDataPacket[]>(
         'SELECT 1 FROM balance_accounts WHERE user_id = ? LIMIT 1', [String(userId)],
       );
-      if (!accounts[0]) throw new AppError(BIZ_CODES.INVALID_PARAM, '该用户没有积分账户（仅会员可调整积分）');
+      if (!accounts[0]) {
+        const [memberRows] = await conn.execute<RowDataPacket[]>(
+          `SELECT 1 FROM memberships
+            WHERE user_id = ? AND status = 'ACTIVE' AND start_at <= ? AND expire_at > ? LIMIT 1`,
+          [String(userId), now, now],
+        );
+        if (!memberRows[0]) {
+          throw new AppError(BIZ_CODES.INVALID_PARAM, '该用户不是有效会员，无法调整积分；请先授予会员资格');
+        }
+        // INSERT IGNORE：并发下两次调账不会互相冲突
+        await conn.execute(
+          `INSERT IGNORE INTO balance_accounts (user_id, available_cent, frozen_cent, version)
+           VALUES (?, 0, 0, 0)`,
+          [String(userId)],
+        );
+      }
 
       const [inserted] = await conn.execute<ResultSetHeader>(
         `INSERT INTO balance_adjustments

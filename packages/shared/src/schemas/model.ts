@@ -42,6 +42,14 @@ export const modelProfileUpsertSchema = z
     socialAccounts: z.array(modelSocialAccountSchema).max(10, '最多 10 个社交账号').default([]),
     /** 模特档案不再有可见性字段（visibility 列已在 007 移除）；场次的可见性另算 */
     portraitAuthStatus: z.enum(['PENDING', 'GRANTED', 'EXPIRED', 'REVOKED']).optional(),
+    /**
+     * 身高/三围属《个人信息保护法》第 28 条的敏感个人信息，需**单独同意**。
+     * 运营勾选此项表示已取得模特本人对「收录并在会员端展示身高与三围」的明确同意；
+     * 服务端据此写入 body_data_consent_at 留痕。
+     */
+    bodyDataConsent: z.boolean().optional(),
+    /** 同意方式留痕（口头/书面/线上），选填 */
+    bodyDataConsentNote: z.string().trim().max(200).nullable().optional(),
   })
   .strict();
 export type ModelProfileUpsertPayload = z.infer<typeof modelProfileUpsertSchema>;

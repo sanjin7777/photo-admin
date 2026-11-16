@@ -18,7 +18,16 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5174,
-      ...(useMock ? {} : { proxy: { '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true } } }),
+      // 生产由 Nginx 直接从磁盘提供 /uploads/，本地 dev 没有这层，
+      // 需要把 /uploads 一并代理到后端，否则上传的图片在页面上全部裂图。
+      ...(useMock
+        ? {}
+        : {
+            proxy: {
+              '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true },
+              '/uploads': { target: 'http://127.0.0.1:3000', changeOrigin: true },
+            },
+          }),
     },
   };
 });

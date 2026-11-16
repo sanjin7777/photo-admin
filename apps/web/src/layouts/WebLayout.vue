@@ -10,14 +10,38 @@ const ui = useUiStore();
 const session = useSessionStore();
 const route = useRoute();
 
+/**
+ * 底部 tab 图标（24×24 线性图标，stroke 随 currentColor 变化）。
+ * 用内联 SVG 而不是图标库：只有 4 个图标，引一整个图标包不值得。
+ */
+const ICONS = {
+  calendar: [
+    'M8 2v4M16 2v4M3 10h18',
+    'M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',
+  ],
+  ticket: [
+    'M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 6v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-6V7Z',
+    'M13 5v3M13 12v3M13 18v1',
+  ],
+  shirt: [
+    'M15.5 3 20 5.2a1 1 0 0 1 .5 1.2l-1 3a1 1 0 0 1-.9.6H17v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9H6.4a1 1 0 0 1-.9-.6l-1-3A1 1 0 0 1 5 5.2L9.5 3a2.5 2.5 0 0 0 6 0Z',
+  ],
+  user: [
+    'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
+    'M20 21v-1a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v1',
+  ],
+} as const;
+
 const menus = computed(() => {
-  const base: Array<{ to: string; label: string }> = [{ to: '/', label: '场次' }];
-  // 未登录只留场次入口；「我的报名 / 个人中心」必须登录后才展示
+  const base: Array<{ to: string; label: string; icon: readonly string[] }> = [
+    { to: '/', label: '场次', icon: ICONS.calendar },
+  ];
+  // 未登录只留场次入口；「我的登记 / 个人中心」必须登录后才展示
   if (!session.user) return base;
-  base.push({ to: '/my', label: '我的报名' });
+  base.push({ to: '/my', label: '我的登记', icon: ICONS.ticket });
   // 仅 SVIP 具备 vote:cast；非 SVIP 不渲染入口（后端与路由守卫同样会拦）
-  if (session.can('vote:cast')) base.push({ to: '/vote', label: '服装投票' });
-  base.push({ to: '/profile', label: '个人中心' });
+  if (session.can('vote:cast')) base.push({ to: '/vote', label: '服装投票', icon: ICONS.shirt });
+  base.push({ to: '/profile', label: '个人中心', icon: ICONS.user });
   return base;
 });
 const active = (p: string) => route.path === p;
@@ -99,13 +123,17 @@ const avatarText = computed(() => (session.user?.nickname ?? '游').slice(0, 1))
       </p>
     </footer>
 
-    <!-- 移动端底部导航 -->
+    <!-- 移动端底部导航：图标 + 文字，高度 4rem（原 3.25rem 偏矮，图标放不下） -->
     <nav v-if="isMobile" class="safe-bottom fixed bottom-0 left-0 right-0 z-40 flex border-t border-slate-200 bg-white/95 backdrop-blur md:hidden">
       <RouterLink v-for="m in menus" :key="m.to" :to="m.to"
-        class="flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xs"
+        class="flex h-16 flex-1 flex-col items-center justify-center gap-1 text-[11px] leading-none transition"
         :class="active(m.to) ? 'font-medium text-brand-soft' : 'text-slate-500'">
-        <span class="h-1 w-1 rounded-full" :class="active(m.to) ? 'bg-brand' : 'bg-transparent'" />
-        {{ m.label }}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          :stroke-width="active(m.to) ? 2.2 : 1.8" stroke-linecap="round" stroke-linejoin="round"
+          class="h-[22px] w-[22px]" aria-hidden="true">
+          <path v-for="(d, i) in m.icon" :key="i" :d="d" />
+        </svg>
+        <span>{{ m.label }}</span>
       </RouterLink>
     </nav>
   </div>

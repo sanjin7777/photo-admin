@@ -8,9 +8,10 @@
 import { onMounted, ref } from 'vue';
 import { showConfirmDialog } from 'vant';
 import type { RegistrationDto } from '@photo/shared';
+import { formatUntilStart, refundAmountOf } from '@photo/shared';
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
-import { timeRange, yuan } from '../composables/usePricing';
+import { timeRange, pts, ptsNum } from '../composables/usePricing';
 
 const ui = useUiStore();
 const list = ref<RegistrationDto[]>([]);
@@ -75,15 +76,43 @@ function sessionText(r: RegistrationDto): string {
 }
 
 async function cancel(r: RegistrationDto): Promise<void> {
-  const tip = r.paymentStatus === 'UNPAID'
-    ? `本单为线下支付，取消后请与客服确认退款事宜（金额 ${yuan(r.feeCent)}）。`
-    : `取消后需等待运营审核退款，退款金额以取消规则为准（约 ${yuan(r.feeCent)} 起）。取消后名额将释放。`;
+  const snapshot = r.refundPolicySnapshot ?? { freeCancelBeforeHours: 48, feeRatio: 0 };
+  const startAt = r.session?.startAt ?? r.sessionStartAt ?? null;
+  const returnable = refundAmountOf(r.feeCent, snapshot.feeRatio);
+
+  /**
+   * 取消前的确认框要讲清楚「退回多少积分、什么时点退回」。
+   * 全程只提积分，不出现金额——积分是站内权益单位，不可兑现。
+   */
+  const lines: string[] = [];
+  if (returnable <= 0) {
+    lines.push(`已超过可退回时间，本次消耗的 ${pts(r.feeCent)} 将不予退回。`);
+  } else if (returnable < r.feeCent) {
+    const fee = r.feeCent - returnable;
+    lines.push(`将退回 ${pts(returnable)}，按规则扣除 ${pts(fee)}（扣减比例 ${Math.round(snapshot.feeRatio * 100)}%）。`);
+  } else {
+    lines.push(`将全额退回 ${pts(returnable)}，不扣除积分。`);
+  }
+  if (startAt) {
+    lines.push(`当前${formatUntilStart(startAt)}，免费取消需提前 ${snapshot.freeCancelBeforeHours} 小时。`);
+  }
+  lines.push('取消后名额立即释放，无法撤销。');
+
   try {
-    await showConfirmDialog({ title: '确认取消报名？', message: tip, confirmButtonText: '确认取消', cancelButtonText: '再想想' });
+    await showConfirmDialog({
+      title: '确认取消登记？',
+      message: lines.join('\n'),
+      confirmButtonText: '确认取消',
+      cancelButtonText: '再想想',
+    });
   } catch { return; }
+
   try {
     await api.registrations.cancel(r.id, {});
-    ui.notify('已提交取消申请', 'success');
+    const done = returnable <= 0
+      ? '已取消登记'
+      : `已取消登记，退回 ${pts(returnable)}`;
+    ui.notify(done, 'success');
     await reload();
   } catch { /* 统一提示 */ }
 }
@@ -92,9 +121,9 @@ async function cancel(r: RegistrationDto): Promise<void> {
 <template>
   <section class="mx-auto max-w-3xl pb-6">
     <div class="mb-4">
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-900">我的报名</h1>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-900">我的登记</h1>
       <p class="mt-1 text-sm text-slate-500">
-        按所选时段到场，取消规则以场次说明为准<template v-if="total"> · 共 {{ total }} 条</template>
+        按所选时段到场，凭票根核销<template v-if="total"> · 共 {{ total }} 条</template>
       </p>
     </div>
 
@@ -117,32 +146,29 @@ async function cancel(r: RegistrationDto): Promise<void> {
             <p class="mt-1 text-xs text-slate-500">
               {{ sessionText(r) }}
             </p>
-            <p class="mt-1 text-xs text-slate-500">报名于 {{ new Date(r.createdAt).toLocaleString('zh-CN') }}</p>
+            <p class="mt-1 text-xs text-slate-500">登记于 {{ new Date(r.createdAt).toLocaleString('zh-CN') }}</p>
           </div>
           <div class="flex shrink-0 flex-col items-end gap-1">
             <span class="chip" :class="statusClass[r.status] ?? 'bg-slate-100 text-slate-600'">{{ statusLabel[r.status] ?? r.status }}</span>
-            <span class="text-sm font-semibold text-slate-900">{{ yuan(r.feeCent) }}</span>
+            <span class="text-sm font-semibold text-slate-900">消耗 {{ ptsNum(r.feeCent) }}</span>
             <span v-if="r.discountCent > 0" class="text-xs text-emerald-600">
-              原价 {{ yuan(r.originalFeeCent) }} · {{ r.couponTitle ?? '优惠券' }}
+              基准 {{ ptsNum(r.originalFeeCent) }} · {{ r.couponTitle ?? '优惠券' }}
             </span>
           </div>
         </div>
 
-        <div v-if="r.paymentStatus === 'UNPAID'" class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
-          <b>待线下支付</b>：请联系客服完成付款，运营确认后状态会更新为已支付。
-        </div>
-        <div v-else-if="r.paymentStatus === 'PAID'" class="mt-3 text-xs text-slate-500">已完成收款确认</div>
-
         <div class="mt-3 flex gap-2">
-          <!-- 候补已下线（2026-11-13）：不再展示「确认递补」 -->
-          <button v-if="r.status === 'CONFIRMED' || r.status === 'WAITLISTED'" class="btn-ghost flex-1 py-2 text-xs" @click="cancel(r)">取消报名</button>
+          <!-- 票根：登记成功后凭此到场与核销 -->
+          <RouterLink v-if="r.status !== 'CANCELLED'" :to="`/tickets/${r.id}`"
+            class="btn-primary flex-1 py-2 text-center text-xs">查看票根</RouterLink>
+          <button v-if="r.status === 'CONFIRMED' || r.status === 'WAITLISTED'" class="btn-ghost flex-1 py-2 text-xs" @click="cancel(r)">取消登记</button>
           <RouterLink :to="`/events/${r.eventId}`" class="btn-ghost flex-1 py-2 text-center text-xs">查看场次</RouterLink>
         </div>
       </div>
     </van-list>
 
     <div v-if="!firstLoad && !list.length" class="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white py-14 text-center">
-      <p class="text-sm font-medium text-slate-700">还没有报名记录</p>
+      <p class="text-sm font-medium text-slate-700">还没有登记记录</p>
       <RouterLink to="/" class="btn-primary mt-2 px-5 py-2 text-xs">去看看场次</RouterLink>
     </div>
   </section>

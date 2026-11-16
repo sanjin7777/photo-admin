@@ -41,6 +41,21 @@ export const pageQuerySchema = z.object({
 export type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 /**
+ * 前台场次列表查询。
+ *
+ * `scope` 用来区分「近期场次」与「历史活动」两块：
+ * - `upcoming`：还没开始的场次（游客默认只看这块）
+ * - `past`：已经结束的场次，**仅登录用户可请求**，游客请求会被服务端拒绝
+ *
+ * 判定基准是场次的开始时间 `start_at`（不是报名截止时间）——一次活动一旦开演，
+ * 就归入历史，避免把正在进行中的场次算作「即将开始」。
+ */
+export const publicEventListQuerySchema = pageQuerySchema.extend({
+  scope: z.enum(['upcoming', 'past']).default('upcoming'),
+});
+export type PublicEventListQueryInput = z.infer<typeof publicEventListQuerySchema>;
+
+/**
  * 日期范围筛选（财务对账、报名统计都按自然日看）。
  *
  * 只收 `YYYY-MM-DD`，不收到秒的时间戳：运营选的是「10 月 1 日到 10 月 7 日」，

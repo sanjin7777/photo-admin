@@ -32,6 +32,7 @@ import type {
   BalanceTransactionPage,
   CapabilitiesDto,
   EventAvailabilityDto,
+  EventParticipantsDto,
   EventDto,
   EventPage,
   InviteCodeCreateResultDto,
@@ -41,11 +42,13 @@ import type {
   ModelProfileDto,
   PermissionLogDto,
   PosterSettingsDto,
+  PosterLayoutDto,
   PublicSettingsDto,
   RefreshResultDto,
   RefundOrderDto,
   RefundOrderPage,
   RegistrationBatchDto,
+  SessionAvoidRuleDto,
   RegistrationDto,
   RegistrationPage,
   SceneDto,
@@ -74,6 +77,7 @@ import type {
   AdminUpdateUserPayload,
   BalanceAdjustmentPayload,
   ChangePasswordPayload,
+  DeleteAccountPayload,
   EventCreatePayload,
   EventPatchPayload,
   InviteCodeCreatePayload,
@@ -83,12 +87,14 @@ import type {
   MembershipRevokePayload,
   ModelProfileUpsertPayload,
   PosterSettingsUpdatePayload,
+  PosterLayoutUpdatePayload,
   RefundReviewPayload,
   RefundSettlePayload,
   RegisterPayload,
   RegistrationCancelPayload,
   RegistrationCreatePayload,
   SceneUpsertPayload,
+  SessionAvoidRuleCreatePayload,
   VoteCampaignCreatePayload,
   VoteCampaignPatchPayload,
   VoteCastPayload,
@@ -106,13 +112,25 @@ export function createApiClient(http: HttpClient) {
       /** 本人改密：返回更新后的用户信息（mustChangePassword 已清零） */
       changePassword: (payload: ChangePasswordPayload) =>
         http.post<UserDto>(ENDPOINTS.auth.password, payload),
+      /** 本人注销账号：成功后服务端已清除登录 Cookie，前端需跳回首页 */
+      deleteAccount: (payload: DeleteAccountPayload) =>
+        http.post<null>(ENDPOINTS.auth.deleteAccount, payload),
     },
 
     events: {
-      list: (query: PageQuery = {}) => http.get<EventPage>(ENDPOINTS.events.list, { params: query }),
+      /**
+       * `scope` 区分近期与历史：
+       * - `upcoming`（默认）未开始的场次，游客可见
+       * - `past` 已结束的场次，仅登录用户可拉取
+       */
+      list: (query: PageQuery & { scope?: 'upcoming' | 'past' } = {}) =>
+        http.get<EventPage>(ENDPOINTS.events.list, { params: query }),
       detail: (id: string) => http.get<EventDto>(ENDPOINTS.events.detail(id)),
       availability: (id: string) =>
         http.get<EventAvailabilityDto>(ENDPOINTS.events.availability(id)),
+      /** SVIP 专属：登记中场次的已登记昵称名单（无微信号） */
+      participants: (id: string) =>
+        http.get<EventParticipantsDto>(ENDPOINTS.events.participants(id)),
     },
 
     registrations: {
@@ -229,9 +247,10 @@ export function createApiClient(http: HttpClient) {
         list: (query: AdminRegistrationListQuery = {}) =>
           http.get<AdminRegistrationPage>(ENDPOINTS.admin.registrations, { params: query }),
         /** 手动录入线下报名：不扣积分，收款状态由运营选择 */
+        /** 手动录入：支持多名额，返回与自助登记同构的批次结果 */
         create: (payload: AdminRegistrationCreatePayload) =>
-          http.post<RegistrationDto>(ENDPOINTS.admin.registrations, payload),
-        /** 按微信号校验报名账号，返回昵称与有效等级 */
+          http.post<RegistrationBatchDto>(ENDPOINTS.admin.registrations, payload),
+        /** 按微信号校验报名账号，返回昵称、有效等级与可用积分 */
         lookup: (wechatId: string) =>
           http.get<AdminRegistrationLookupDto>(ENDPOINTS.admin.registrationLookup, { params: { wechatId } }),
         /** 下拉选人选项：手动录入 / 发券共用，keyword 模糊搜微信号或昵称 */
@@ -248,6 +267,15 @@ export function createApiClient(http: HttpClient) {
          */
         batch: (payload: AdminRegistrationBatchPayload) =>
           http.post<AdminRegistrationBatchResult>(ENDPOINTS.admin.registrationBatch, payload),
+        /** 时段级回避名单：运营配置「该时段不接受某人报名」 */
+        avoidRules: {
+          list: (sessionId: string) =>
+            http.get<SessionAvoidRuleDto[]>(ENDPOINTS.admin.sessionAvoidRules, { params: { sessionId } }),
+          create: (payload: SessionAvoidRuleCreatePayload) =>
+            http.post<SessionAvoidRuleDto>(ENDPOINTS.admin.sessionAvoidRules, payload),
+          revoke: (id: string) =>
+            http.post<{ id: string }>(ENDPOINTS.admin.sessionAvoidRuleRevoke(id)),
+        },
       },
       refunds: {
         list: (query: AdminRefundListQuery = {}) =>
@@ -334,6 +362,13 @@ export function createApiClient(http: HttpClient) {
         get: () => http.get<PosterSettingsDto>(ENDPOINTS.admin.posterSettings),
         update: (payload: PosterSettingsUpdatePayload) =>
           http.put<PosterSettingsDto>(ENDPOINTS.admin.posterSettings, payload),
+      },
+
+      /** 海报版式（设计器）：只存区块布局，不动二维码与标题 */
+      posterLayout: {
+        get: () => http.get<PosterLayoutDto | null>(ENDPOINTS.admin.posterLayout),
+        save: (payload: PosterLayoutUpdatePayload) =>
+          http.put<PosterLayoutDto>(ENDPOINTS.admin.posterLayout, payload),
       },
 
       /** 会员管理页的用户列表 */

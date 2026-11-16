@@ -254,8 +254,8 @@ interface Kpi {
 }
 const cards = computed<Kpi[]>(() => ([
   {
-    key: 'revenue', label: '实收金额', display: `¥${dRevenue.value.toLocaleString('zh-CN')}`,
-    sub: `其中积分抵扣 ¥${fmtYuan(pointsPaid.value)}`, delta: revenueDelta.value,
+    key: 'revenue', label: '实收金额', display: `${dRevenue.value.toLocaleString('zh-CN')} 积分`,
+    sub: `其中积分抵扣 ${fmtYuan(pointsPaid.value)}`, delta: revenueDelta.value,
     accent: '#f5a524', to: '/registrations', cap: 'admin:registration:write', spark: trend.value.map((b) => b.revenue),
   },
   {
@@ -270,12 +270,12 @@ const cards = computed<Kpi[]>(() => ([
   },
   {
     key: 'unpaid', label: '待收款', display: String(dUnpaid.value),
-    sub: `合计 ¥${fmtYuan(unpaidAmount.value)}`, delta: null,
+    sub: `合计 ${fmtYuan(unpaidAmount.value)} 积分`, delta: null,
     accent: '#f5a524', to: '/registrations?pay=UNPAID', cap: 'admin:registration:write', warn: true,
   },
   {
     key: 'pending', label: '待审核退款', display: String(dPending.value),
-    sub: `合计 ¥${fmtYuan(pendingAmount.value)}`, delta: null,
+    sub: `合计 ${fmtYuan(pendingAmount.value)} 积分`, delta: null,
     accent: '#f43f7a', to: '/finance?tab=refunds', cap: 'admin:refund:review', warn: true,
   },
   {
@@ -339,18 +339,18 @@ function exportSnapshot(): void {
   const lines: string[] = ['指标,值'];
   lines.push(`统计范围,${rangeDays.value ? `近 ${rangeDays.value} 天` : '全部'}`);
   lines.push(`场次筛选,${eventFilter.value ? events.value.find((e) => e.id === eventFilter.value)?.title ?? eventFilter.value : '全部场次'}`);
-  lines.push(`实收金额(元),${(revenue.value / 100).toFixed(2)}`);
+  lines.push(`实收积分,${(revenue.value / 100).toFixed(2)}`);
   lines.push(`报名名额,${activeRegs.value.length}`);
   lines.push(`上座率(%),${occupancy.value}`);
   lines.push(`待收款(笔),${unpaidRegs.value.length}`);
-  lines.push(`待收款金额(元),${(unpaidAmount.value / 100).toFixed(2)}`);
+  lines.push(`待确认金额,${(unpaidAmount.value / 100).toFixed(2)}`);
   lines.push(`待审核退款(笔),${pendingRefunds.value.length}`);
-  lines.push(`已退款金额(元),${(refundedAmount.value / 100).toFixed(2)}`);
+  lines.push(`已退回积分,${(refundedAmount.value / 100).toFixed(2)}`);
   lines.push(`会员数,${memberCount.value}`);
   lines.push(`优惠券核销率(%),${couponStats.value.rate}`);
   lines.push('', '场次,已报,容量,满员率(%)');
   for (const r of fillRows.value) lines.push([esc(r.title), r.used, r.cap, r.pct].join(','));
-  lines.push('', '日期,报名名额,实收金额(元)');
+  lines.push('', '日期,报名名额,实收积分');
   for (const b of trend.value) lines.push([b.label, b.count, (b.revenue / 100).toFixed(2)].join(','));
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -503,7 +503,7 @@ function exportSnapshot(): void {
               <RouterLink to="/members" class="ck-link">用户管理 →</RouterLink>
             </div>
             <CkChart :option="levelOption" height="230px" />
-            <p class="mt-1 text-[11px] text-[#8b93a7]">会员累计赠送 <span class="font-mono text-[#f7c948]">¥{{ fmtYuan(bonusGrantedTotal) }}</span></p>
+            <p class="mt-1 text-[11px] text-[#8b93a7]">会员累计赠送 <span class="font-mono text-[#f7c948]">{{ fmtYuan(bonusGrantedTotal) }}</span></p>
           </div>
         </div>
 
@@ -527,7 +527,7 @@ function exportSnapshot(): void {
                 <p class="text-[11px] text-[#8b93a7]">核销率（已使用 / 有效发放）</p>
               </div>
               <div class="text-right">
-                <p class="font-mono text-lg text-[#f5a524]">¥{{ fmtYuan(discountTotal) }}</p>
+                <p class="font-mono text-lg text-[#f5a524]">{{ fmtYuan(discountTotal) }}</p>
                 <p class="text-[11px] text-[#8b93a7]">期内累计优惠</p>
               </div>
             </div>
@@ -546,10 +546,10 @@ function exportSnapshot(): void {
             <div class="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
               <div class="ck-mini">
                 <p class="font-mono text-lg text-[#f5a524]">{{ pendingRefunds.length }}</p>
-                <p class="text-[11px] text-[#8b93a7]">待审核 · ¥{{ fmtYuan(pendingAmount) }}</p>
+                <p class="text-[11px] text-[#8b93a7]">待审核 · {{ fmtYuan(pendingAmount) }}</p>
               </div>
               <div class="ck-mini">
-                <p class="font-mono text-lg text-[#34d399]">¥{{ fmtYuan(refundedAmount) }}</p>
+                <p class="font-mono text-lg text-[#34d399]">{{ fmtYuan(refundedAmount) }}</p>
                 <p class="text-[11px] text-[#8b93a7]">期内已退款</p>
               </div>
               <div class="ck-mini">
@@ -566,7 +566,7 @@ function exportSnapshot(): void {
                 class="flex items-center gap-3 rounded-lg border border-[#1e2a45] bg-[#0d1428]/60 px-3 py-2 text-xs transition hover:border-[#2a3550]">
                 <span class="font-mono text-slate-200">{{ r.requesterWechatId ?? `用户 #${r.requestedBy}` }}</span>
                 <span class="truncate text-[#8b93a7]">{{ r.eventTitle ?? '未知场次' }} · {{ r.sessionLabel ?? '—' }}</span>
-                <span class="ml-auto shrink-0 font-mono text-slate-200">¥{{ fmtYuan(r.amountCent) }}</span>
+                <span class="ml-auto shrink-0 font-mono text-slate-200">{{ fmtYuan(r.amountCent) }}</span>
                 <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="REFUND_META[r.status]?.cls ?? ''">
                   {{ REFUND_META[r.status]?.label ?? r.status }}
                 </span>
@@ -592,7 +592,7 @@ function exportSnapshot(): void {
                     </p>
                     <p class="text-[11px] text-[#8b93a7]">{{ r.sessionLabel ?? '—' }} · {{ relTime(r.createdAt) }}</p>
                   </div>
-                  <span class="shrink-0 font-mono text-xs text-[#f5a524]">¥{{ fmtYuan(r.feeCent) }}</span>
+                  <span class="shrink-0 font-mono text-xs text-[#f5a524]">{{ fmtYuan(r.feeCent) }}</span>
                 </RouterLink>
               </li>
             </ul>

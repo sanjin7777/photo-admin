@@ -1,5 +1,6 @@
-/** 场次海报配置（后台）：网站二维码 + 客服二维码地址 + 左上角标题。 */
+/** 场次海报配置（后台）：网站二维码 + 客服二维码地址 + 左上角标题 + 版式。 */
 import { z } from 'zod';
+import { posterLayoutSchema } from './poster';
 
 /** 允许站内 /uploads 路径或 http(s) 绝对地址；拒绝 // 开头与其它协议 */
 const qrImageUrlSchema = z
@@ -31,6 +32,22 @@ export const posterSettingsUpdateSchema = z
     siteQrUrl: qrUrlField.optional(),
     /** 海报左上角标题：留空使用内置默认标题 */
     brandTitle: brandTitleField.optional(),
+    /**
+     * 海报版式：设计器产出的区块布局。
+     * 省略 / null 表示「沿用预设版式」，此时导出时按 style 选经典/双人/通栏。
+     */
+    layout: posterLayoutSchema.nullable().optional(),
   })
   .strict();
 export type PosterSettingsUpdatePayload = z.infer<typeof posterSettingsUpdateSchema>;
+
+/**
+ * 只更新版式的专用接口负载。
+ *
+ * 单独开一个端点而不是复用上面那个：设计器点「保存」时不该顺带改写二维码，
+ * 否则设计器里没带二维码字段就会把它们清空（`.optional()` + 覆盖写的老问题）。
+ *
+ * `layout: null` 表示清除自定义版式、回退到预设。
+ */
+export const posterLayoutUpdateSchema = z.object({ layout: posterLayoutSchema.nullable() }).strict();
+export type PosterLayoutUpdatePayload = z.infer<typeof posterLayoutUpdateSchema>;

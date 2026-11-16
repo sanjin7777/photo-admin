@@ -116,25 +116,38 @@ async function exportCsv(target: string): Promise<void> {
     <el-tabs v-model="tab">
       <el-tab-pane v-for="t in tabs" :key="t.name" :label="t.label" :name="t.name">
         <div v-if="t.name === 'audit'">
-          <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
-            <select v-model="auditAction" class="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" @change="load">
-              <option value="">全部动作</option>
-              <option v-for="(label, key) in AUDIT_ACTION" :key="key" :value="key">{{ label }}</option>
-            </select>
-            <input v-model="auditKeyword" class="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-              placeholder="搜索操作人微信号 / 对象类型 / 对象 ID" @keyup.enter="load" />
-            <button class="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50" @click="load">查询</button>
-            <span class="text-xs text-slate-500">共 {{ auditTotal }} 条（显示最近 100 条）</span>
-          </div>
+          <el-form inline class="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+            <el-form-item label="动作">
+              <el-select v-model="auditAction" placeholder="全部动作" clearable class="!w-44" @change="load">
+                <el-option v-for="(label, key) in AUDIT_ACTION" :key="key" :label="label" :value="key" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="关键词">
+              <el-input v-model="auditKeyword" placeholder="操作人微信号 / 对象类型 / 对象 ID"
+                clearable class="!w-72" @keyup.enter="load" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="load">查询</el-button>
+            </el-form-item>
+            <el-form-item>
+              <span class="text-xs text-slate-500">共 {{ auditTotal }} 条（显示最近 100 条）</span>
+            </el-form-item>
+          </el-form>
           <ResponsiveTable :rows="auditRows" :columns="columns" />
         </div>
         <div v-else-if="t.name === 'permissions'">
-          <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
-            <input v-model="permissionKeyword" class="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-              placeholder="搜索操作人 / 被授予人微信号" @keyup.enter="load" />
-            <button class="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50" @click="load">查询</button>
-            <span class="text-xs text-slate-500">共 {{ permissionTotal }} 条（显示最近 100 条）</span>
-          </div>
+          <el-form inline class="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+            <el-form-item label="关键词">
+              <el-input v-model="permissionKeyword" placeholder="操作人 / 被授予人微信号"
+                clearable class="!w-72" @keyup.enter="load" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="load">查询</el-button>
+            </el-form-item>
+            <el-form-item>
+              <span class="text-xs text-slate-500">共 {{ permissionTotal }} 条（显示最近 100 条）</span>
+            </el-form-item>
+          </el-form>
           <ResponsiveTable :rows="permissionRows" :columns="columns" />
         </div>
         <div v-else class="max-w-xl space-y-3 rounded-xl border border-slate-200 bg-white p-4">

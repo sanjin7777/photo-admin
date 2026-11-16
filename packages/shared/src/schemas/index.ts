@@ -14,3 +14,4 @@ export * from './scene';
 export * from './invite';
 export * from './settings';
 export * from './coupon';
+export * from './poster';

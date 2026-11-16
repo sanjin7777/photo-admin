@@ -149,7 +149,15 @@ const isMemberAcc = (acc: MockAccount | null): boolean => !!acc && (acc.level ==
 function publicEventOf(ev: typeof EVENT_PUBLIC, acc: MockAccount | null): typeof EVENT_PUBLIC {
   const member = isMemberAcc(acc);
   const model = ev.model && !member ? { ...ev.model, heightCm: null, measurements: null } : ev.model;
-  return { ...ev, model } as typeof EVENT_PUBLIC;
+  /**
+   * 多模特同步做会员 gating：非会员看到的每个模特都要脱敏。
+   * 单模特场次 models 为空或只有一项，行为与之前一致。
+   */
+  const srcModels = (ev as { models?: unknown[] }).models;
+  const models = Array.isArray(srcModels) && srcModels.length
+    ? (member ? srcModels : srcModels.map((m) => ({ ...(m as object), heightCm: null, measurements: null })))
+    : (model ? [model] : []);
+  return { ...ev, model, models } as typeof EVENT_PUBLIC;
 }
 
 /** 报名门槛（点2）：可见性已在 visibleEvents 过滤，这里只判 registerMinLevel */
@@ -219,6 +227,16 @@ function priceOf(ev: typeof EVENT_PUBLIC, level: MockAccount['level']): number {
   if (level === 'VIP') return find('VIP') ?? find('PUBLIC') ?? 0;
   return find('PUBLIC') ?? 0;
 }
+
+/**
+ * mock 的时段回避名单（内存态，进程内有效）。
+ * 真实服务端落在 session_avoid_rules 表，语义一致：
+ * 「某时段不接受某人报名」，且与 owner 取消报名联动撤销。
+ */
+const MOCK_AVOID_RULES: Array<{
+  id: string; sessionId: string; ownerUserId: string | null; blockedUserId: string;
+  note: string | null; createdBy: string | null; createdAt: string; revokedAt: string | null;
+}> = [];
 
 export async function mockHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -360,7 +378,54 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const ev = visibleEvents(acc).find((e) => e.id === eventAvail[1] && e.status !== 'DRAFT');
     if (!ev) { json(res, { canRegister: false, reasonCode: BIZ_CODES.RESOURCE_NOT_FOUND }); return; }
     const reason = registerGateReason(ev as typeof EVENT_PUBLIC, acc);
-    json(res, { canRegister: reason === null, reasonCode: reason });
+    // 回避名单：只回时段 id，不回「被谁排除」
+    const restricted = acc
+      ? MOCK_AVOID_RULES
+        .filter((r) => !r.revokedAt && r.blockedUserId === acc!.id
+          && (ev.sessions ?? []).some((s) => s.id === r.sessionId))
+        .map((r) => r.sessionId)
+      : [];
+    /**
+     * 逐时段判定：与真实服务端一致。
+     * 只回整场一个 canRegister 会让「第1场满、第2场有位」时按钮被整体禁用。
+     */
+    const sessions = (ev.sessions ?? []) as Array<{
+      id: string; status: string; startAt: string; endAt: string;
+      capacity: number; capacityUsed: number; kind?: string;
+    }>;
+    const sessionChecks = sessions.map((s) => {
+      let code: number | null = reason;
+      if (code === null) {
+        if (s.status !== 'OPEN') code = BIZ_CODES.EVENT_NOT_OPEN;
+        else if (s.kind !== 'PROXY' && s.capacityUsed >= s.capacity) code = BIZ_CODES.EVENT_FULL;
+        else if (restricted.includes(s.id)) code = BIZ_CODES.SESSION_RESTRICTED;
+      }
+      return { sessionId: s.id, canRegister: code === null, reasonCode: code };
+    });
+    const canRegister = sessionChecks.some((c) => c.canRegister);
+    json(res, {
+      canRegister,
+      reasonCode: canRegister ? null : (sessionChecks.find((c) => c.reasonCode != null)?.reasonCode ?? reason),
+      sessionChecks,
+      restrictedSessionIds: restricted,
+    });
+    return;
+  }
+  const eventParticipants = /^\/events\/([^/]+)\/participants$/.exec(path);
+  if (eventParticipants) {
+    // SVIP 专属：只回昵称，不回微信号（与真实服务端口径一致）
+    if (needAuth()) return;
+    if (!acc!.level || acc!.level !== 'SVIP') { fail(res, BIZ_CODES.FORBIDDEN, '仅 SVIP 可查看'); return; }
+    const ev = visibleEvents(acc).find((e) => e.id === eventParticipants[1] && e.status !== 'DRAFT');
+    if (!ev) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND, '场次不存在或不可见'); return; }
+    const sessions = (ev.sessions ?? []).map((s: { id: string; label: string }) => {
+      const names = REGISTRATIONS
+        .filter((r) => r.eventId === ev.id && r.sessionId === s.id
+          && ['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(r.status))
+        .map((r) => ACCOUNTS.find((a) => a.id === r.userId)?.nickname ?? '会员');
+      return { sessionId: String(s.id), label: s.label, count: names.length, nicknames: names, moreCount: 0 };
+    });
+    json(res, { eventId: String(ev.id), available: true, sessions });
     return;
   }
 
@@ -377,14 +442,23 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const body = JSON.parse((await readBody(req)) || '{}') as {
       sessionId?: string; ignoreConflict?: boolean; seats?: number; couponIds?: unknown;
     };
+    // 与真实服务端一致：命中时段回避名单直接拒，文案中性
+    if (MOCK_AVOID_RULES.some(
+      (r) => !r.revokedAt && r.sessionId === body.sessionId && r.blockedUserId === acc!.id,
+    )) {
+      fail(res, BIZ_CODES.SESSION_RESTRICTED);
+      return;
+    }
     const allSessions = [...EVENT_PUBLIC.sessions, ...EVENT_SVIP.sessions];
     const target = allSessions.find((s) => s.id === body.sessionId);
     const ev = EVENT_PUBLIC.sessions.some((s) => s.id === body.sessionId)
       ? EVENT_PUBLIC
       : EVENT_SVIP.sessions.some((s) => s.id === body.sessionId) ? EVENT_SVIP : EVENT_PUBLIC;
     const ignore = body.ignoreConflict === true;
+    // 代拍不参与时间冲突（与真实服务端一致）
+    const isProxyTarget = (target as { kind?: string } | undefined)?.kind === 'PROXY';
 
-    if (target && !ignore) {
+    if (target && !ignore && !isProxyTarget) {
       // 与已占用名额的报名（已确认/已签到，含历史候补）做时段重叠判断
       const conflicts = REGISTRATIONS
         .filter((r) => r.userId === acc!.id)
@@ -619,6 +693,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     json(res, {
       id: target.id, wechatId: target.wechatId, nickname: target.nickname,
       level: target.level, status: target.frozen ? 'FROZEN' : 'ACTIVE',
+      availableCent: target.balanceCent ?? null,
     });
     return;
   }
@@ -633,15 +708,80 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       .map((a) => ({
         id: a.id, wechatId: a.wechatId, nickname: a.nickname,
         level: a.level, status: a.frozen ? 'FROZEN' : 'ACTIVE',
+        // 手动录入弹窗靠这个字段判断「扣积分够不够」
+        availableCent: a.balanceCent ?? null,
       }));
     json(res, rows);
+    return;
+  }
+  if (path === '/admin/avoid-rules' && method === 'GET') {
+    if (needCap('admin:registration:write')) return;
+    const sessionId = (url.searchParams.get('sessionId') ?? '').trim();
+    const rows = MOCK_AVOID_RULES
+      .filter((r) => !r.revokedAt && r.sessionId === sessionId)
+      .map((r) => {
+        const blocked = ACCOUNTS.find((a) => a.id === r.blockedUserId);
+        const owner = ACCOUNTS.find((a) => a.id === r.ownerUserId);
+        const session = ALL_EVENTS.flatMap((e) => e.sessions ?? []).find((s) => s.id === r.sessionId);
+        return {
+          id: r.id, sessionId: r.sessionId, sessionLabel: session?.label ?? '',
+          eventId: (ALL_EVENTS.find((e) => (e.sessions ?? []).some((s) => s.id === r.sessionId))?.id ?? ''),
+          ownerUserId: r.ownerUserId, ownerNickname: owner?.nickname ?? null,
+          blockedUserId: r.blockedUserId, blockedNickname: blocked?.nickname ?? '',
+          blockedWechatId: blocked?.wechatId ?? '',
+          note: r.note, createdBy: r.createdBy, createdAt: r.createdAt,
+        };
+      });
+    json(res, rows);
+    return;
+  }
+  if (path === '/admin/avoid-rules' && method === 'POST') {
+    if (needCap('admin:registration:write')) return;
+    const body = JSON.parse((await readBody(req)) || '{}') as {
+      sessionId?: string; ownerUserId?: string | null; blockedUserId?: string; note?: string;
+    };
+    if (!body.sessionId || !body.blockedUserId) {
+      fail(res, BIZ_CODES.INVALID_PARAM, '缺少时段或回避对象');
+      return;
+    }
+    if (body.ownerUserId && body.ownerUserId === body.blockedUserId) {
+      fail(res, BIZ_CODES.INVALID_PARAM, '不能把本人加入回避名单');
+      return;
+    }
+    const existed = MOCK_AVOID_RULES.find(
+      (r) => r.sessionId === body.sessionId && r.blockedUserId === body.blockedUserId,
+    );
+    const stamp = new Date().toISOString();
+    if (existed) {
+      existed.ownerUserId = body.ownerUserId ?? null;
+      existed.note = body.note ?? null;
+      existed.revokedAt = null;
+      existed.createdAt = stamp;
+    } else {
+      MOCK_AVOID_RULES.push({
+        id: `a${Date.now()}`, sessionId: body.sessionId!, ownerUserId: body.ownerUserId ?? null,
+        blockedUserId: body.blockedUserId, note: body.note ?? null,
+        createdBy: acc?.id ?? null, createdAt: stamp, revokedAt: null,
+      });
+    }
+    json(res, { ok: true }, 201);
+    return;
+  }
+  if (/^\/admin\/avoid-rules\/[^/]+\/revoke$/.test(path) && method === 'POST') {
+    if (needCap('admin:registration:write')) return;
+    const id = path.split('/')[3];
+    const rule = MOCK_AVOID_RULES.find((r) => r.id === id);
+    if (!rule) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND, '回避规则不存在'); return; }
+    rule.revokedAt = new Date().toISOString();
+    json(res, { id });
     return;
   }
   if (path === '/admin/registrations' && method === 'POST') {
     if (needCap('admin:registration:write')) return;
     const body = JSON.parse((await readBody(req)) || '{}') as {
       wechatId?: string; eventId?: string; sessionId?: string;
-      paymentStatus?: 'PAID' | 'UNPAID'; reason?: string;
+      seats?: number; settleMode?: 'CREDIT' | 'OFFLINE_PAID' | 'OFFLINE_UNPAID' | 'FREE';
+      couponIds?: string[]; arriveStatus?: 'CONFIRMED' | 'CHECKED_IN'; reason?: string;
     };
     const account = ACCOUNTS.find((a) => a.wechatId === (body.wechatId ?? '').trim());
     if (!account) {
@@ -667,8 +807,15 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     }
     const session = event.sessions.find((s) => s.id === body.sessionId);
     if (!session) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND, '时段不存在'); return; }
-    if (session.capacityUsed >= session.capacity) {
-      fail(res, BIZ_CODES.EVENT_FULL, '该时段名额已满，无法补录');
+    const seats = Math.min(Math.max(1, Number(body.seats ?? 1)), 10);
+    if (session.capacityUsed + seats > session.capacity) {
+      fail(res, BIZ_CODES.EVENT_FULL, '该时段剩余名额不足');
+      return;
+    }
+    const settleMode = body.settleMode ?? 'OFFLINE_UNPAID';
+    const isMember = account.level === 'VIP' || account.level === 'SVIP';
+    if (settleMode === 'CREDIT' && !isMember) {
+      fail(res, BIZ_CODES.INVALID_PARAM, '该账号不是 VIP/SVIP，无法按「扣积分」结算');
       return;
     }
     const priceOf = (level: string) => {
@@ -677,22 +824,58 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       if (level === 'VIP') return find('VIP') ?? find('PUBLIC') ?? 0;
       return find('PUBLIC') ?? 0;
     };
-    const feeCent = priceOf(account.level);
+    const unitCent = priceOf(account.level);
+    const couponIds = Array.isArray(body.couponIds) ? body.couponIds : [];
+    const owned = COUPONS.filter((c) => couponIds.includes(c.id) && c.userWechatId === account.wechatId);
+    if (owned.length !== couponIds.length) {
+      fail(res, BIZ_CODES.COUPON_INVALID, '优惠券不存在或不属于该账号');
+      return;
+    }
+    // 与后端同一套折扣算法
+    const discounts = new Array<number>(seats).fill(0);
+    couponIds.slice(0, seats).forEach((id, i) => {
+      const c = owned.find((x) => x.id === id)!;
+      discounts[i] = c.type === 'DISCOUNT'
+        ? unitCent - Math.round((unitCent * Number(c.discountBp ?? 10000)) / 10000)
+        : Math.min(unitCent, Number(c.amountCent ?? 0));
+    });
+    const totalDiscount = settleMode === 'FREE'
+      ? unitCent * seats
+      : discounts.reduce((s, d) => s + d, 0);
+    const payable = Math.max(0, unitCent * seats - totalDiscount);
+    if (settleMode === 'CREDIT' && payable > Number(account.balanceCent ?? 0)) {
+      fail(res, BIZ_CODES.BALANCE_INSUFFICIENT, '可用积分不足');
+      return;
+    }
+    const paymentStatus = settleMode === 'CREDIT' || settleMode === 'FREE'
+      ? 'NOT_REQUIRED' as const
+      : settleMode === 'OFFLINE_PAID' ? 'PAID' as const : 'UNPAID' as const;
+    const arriveStatus = body.arriveStatus === 'CHECKED_IN' ? 'CHECKED_IN' as const : 'CONFIRMED' as const;
     const stamp = new Date().toISOString();
-    const row = {
-      id: `r${Date.now()}`, eventId: event.id, userId: account.id, sessionId: session.id,
-      status: 'CONFIRMED' as const, paymentStatus: body.paymentStatus === 'PAID' ? 'PAID' as const : 'UNPAID' as const,
-      source: 'MANUAL' as const,
-      
-      feeCent, originalFeeCent: feeCent, discountCent: 0, couponId: null, couponTitle: null,
-      refundPolicySnapshot: event.refundPolicy, balanceTxnId: null, cancelReason: null,
-      userWechatId: account.wechatId,
-      eventTitle: event.title, sessionLabel: session.label, sessionStartAt: session.startAt,
-      event, session, createdAt: stamp, updatedAt: stamp,
-    };
-    session.capacityUsed += 1;
-    (REGISTRATIONS as unknown as Array<Record<string, unknown>>).unshift(row);
-    json(res, row, 201);
+    const created: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < seats; i += 1) {
+      const discountCent = settleMode === 'FREE' ? unitCent : (discounts[i] ?? 0);
+      const feeCent = Math.max(0, unitCent - discountCent);
+      const cid = couponIds[i] ?? null;
+      const row = {
+        id: `r${Date.now()}${i}`, eventId: event.id, userId: account.id, sessionId: session.id,
+        status: arriveStatus, paymentStatus, source: 'MANUAL' as const,
+        feeCent, originalFeeCent: unitCent, discountCent, couponId: cid,
+        couponTitle: cid ? (owned.find((c) => c.id === cid)?.title ?? null) : null,
+        refundPolicySnapshot: event.refundPolicy, balanceTxnId: null, cancelReason: null,
+        userWechatId: account.wechatId,
+        eventTitle: event.title, sessionLabel: session.label, sessionStartAt: session.startAt,
+        event, session, createdAt: stamp, updatedAt: stamp,
+      };
+      (REGISTRATIONS as unknown as Array<Record<string, unknown>>).unshift(row);
+      created.push(row);
+    }
+    session.capacityUsed += seats;
+    // 与真实服务端一致：命中回避名单只警告，不阻断运营手动录入
+    const warnings = MOCK_AVOID_RULES.some(
+      (r) => !r.revokedAt && r.sessionId === session.id && r.blockedUserId === account.id,
+    ) ? ['该账号在这个时段的回避名单里；本次按运营强制录入处理。'] : [];
+    json(res, { registrations: created, seats, warnings }, 201);
     return;
   }
   if (path === '/admin/registrations/batch' && method === 'POST') {
@@ -819,7 +1002,12 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     return;
   }
   if (path === '/admin/coupons' && method === 'GET') {
-    if (needCap('admin:membership:grant')) return;
+    // 与真实服务端一致：列表只读，运营（报名写权限）也能查某账号的可用券
+    if (!acc) { fail(res, BIZ_CODES.UNAUTHORIZED, '请先登录', 401); return; }
+    if (!caps.includes('admin:membership:grant') && !caps.includes('admin:registration:write')) {
+      fail(res, BIZ_CODES.FORBIDDEN, '没有该操作的权限', 403);
+      return;
+    }
     const status = (url.searchParams.get('status') ?? '').trim();
     const kw = (url.searchParams.get('keyword') ?? '').trim().toLowerCase();
     const rows = MOCK_COUPONS.map((c) => {
@@ -1266,22 +1454,37 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     return;
   }
 
-  /* ---------------- 海报配置（二维码 + 左上角标题） ---------------- */
+  /* ---------------- 海报配置（二维码 + 左上角标题 + 版式） ---------------- */
   if (path === '/admin/settings/poster') {
     if (needCap('admin:event:write')) return;
     if (method === 'PUT') {
       const body = JSON.parse((await readBody(req)) || '{}') as {
-        qrUrl?: string | null; siteQrUrl?: string | null; brandTitle?: string | null;
+        qrUrl?: string | null; siteQrUrl?: string | null;
+        brandTitle?: string | null; layout?: unknown;
       };
       POSTER_SETTINGS.qrUrl = body.qrUrl ?? null;
       POSTER_SETTINGS.siteQrUrl = body.siteQrUrl ?? null;
       POSTER_SETTINGS.brandTitle = (body.brandTitle ?? '').trim() || null;
+      // 只在显式传了 layout 时才改，避免「改二维码」把设计好的版式清掉
+      if (body.layout !== undefined) POSTER_SETTINGS.layout = body.layout ?? null;
     }
     json(res, {
       qrUrl: POSTER_SETTINGS.qrUrl,
       siteQrUrl: POSTER_SETTINGS.siteQrUrl,
       brandTitle: POSTER_SETTINGS.brandTitle,
+      layout: POSTER_SETTINGS.layout,
     });
+    return;
+  }
+
+  /* ---------------- 海报版式（设计器）：独立读写，不动二维码 ---------------- */
+  if (path === '/admin/settings/poster/layout') {
+    if (needCap('admin:event:write')) return;
+    if (method === 'PUT') {
+      const body = JSON.parse((await readBody(req)) || '{}') as { layout?: unknown };
+      POSTER_SETTINGS.layout = body.layout ?? null;
+    }
+    json(res, POSTER_SETTINGS.layout);
     return;
   }
 

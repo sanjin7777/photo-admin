@@ -22,7 +22,7 @@ import {
 } from '@photo/shared';
 import { pool, withTransaction } from '../db/pool';
 import { authenticate } from '../middleware/auth';
-import { requireCapabilities } from '../middleware/authorize';
+import { requireAnyCapability, requireCapabilities } from '../middleware/authorize';
 import { getIdentity } from '../middleware/context';
 import { asyncHandler } from '../middleware/error';
 import { validateBody, validateQuery } from '../middleware/validate';
@@ -62,10 +62,21 @@ export function mountCoupons(app: Express): void {
   }));
 
   /* ---------------- 后台：列表 / 发放 / 作废 ---------------- */
+  /**
+   * 只读列表单独成组。
+   *
+   * 动机：手动录入报名（OPERATOR，权限 admin:registration:write）时需要拉「该账号的可用券」，
+   * 但发放/作废属于会员管理（admin:membership:grant，仅 ADMIN）。
+   * 若共用一个组，运营在录入弹窗里永远看到「暂无可用券」而不是报错，属于静默失效。
+   * 因此列表放宽为「二者任一」，写操作仍只认 membership:grant。
+   */
+  const adminRead = Router();
+  adminRead.use(authenticate, requireAnyCapability('admin:membership:grant', 'admin:registration:write'));
+
   const admin = Router();
   admin.use(authenticate, requireCapabilities('admin:membership:grant'));
 
-  admin.get('/', validateQuery(adminCouponListQuerySchema), asyncHandler(async (req, res) => {
+  adminRead.get('/', validateQuery(adminCouponListQuerySchema), asyncHandler(async (req, res) => {
     const { page, pageSize, offset } = pageArgsOf(
       req.query as { page?: number; pageSize?: number },
     );
@@ -184,5 +195,7 @@ export function mountCoupons(app: Express): void {
   }));
 
   app.use(`${API_BASE_PATH}/me/coupons`, mine);
+  // 列表（读）必须先于写组挂载：同路径下 Express 按注册顺序匹配
+  app.use(`${API_BASE_PATH}/admin/coupons`, adminRead);
   app.use(`${API_BASE_PATH}/admin/coupons`, admin);
 }

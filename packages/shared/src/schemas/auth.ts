@@ -57,8 +57,10 @@ export type ConsentAcceptPayload = z.infer<typeof consentAcceptSchema>;
 
 export const loginSchema = z
   .object({
-    wechatId: z.string().trim().min(1).max(64),
-    password: z.string().min(1).max(64),
+    // 必须写 message：否则空输入时 Zod 会抛出英文默认文案
+    // （"String must contain at least 1 character(s)"），直接显示在登录框上。
+    wechatId: z.string().trim().min(1, '请输入微信号').max(64, '微信号不超过 64 位'),
+    password: z.string().min(1, '请输入密码').max(64, '密码不超过 64 位'),
   })
   .strict();
 export type LoginPayload = z.infer<typeof loginSchema>;
@@ -79,6 +81,19 @@ export const changePasswordSchema = z
     }
   });
 export type ChangePasswordPayload = z.infer<typeof changePasswordSchema>;
+
+/**
+ * 本人注销账号：必须再次输入密码。
+ *
+ * 注销是不可逆操作，且可能被 CSRF 或会话劫持利用，因此不能只靠 Cookie 鉴权，
+ * 要求用户重新证明自己是账号主人。
+ */
+export const deleteAccountSchema = z
+  .object({
+    password: z.string().min(1, '请输入登录密码').max(64),
+  })
+  .strict();
+export type DeleteAccountPayload = z.infer<typeof deleteAccountSchema>;
 
 export const refreshSchema = z
   .object({ refreshToken: z.string().min(1) })

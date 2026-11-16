@@ -5,14 +5,16 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import type { EventDto, EventStatus, EventVisibility, ModelProfileDto, RegistrationDto, SceneDto } from '@photo/shared';
+import type { EventDto, EventStatus, EventVisibility, ModelProfileDto, PosterLayoutDto, RegistrationDto, SceneDto } from '@photo/shared';
 import { eventCreateSchema, eventPatchSchema } from '@photo/shared';
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import ImageUploader from '../components/ImageUploader.vue';
-import { EVENT_STATUS, REGISTRATION_STATUS, VISIBILITY, metaOf, shortTime, toLocalInput, yuan } from '../utils/labels';
+import PosterDesigner from '../components/PosterDesigner.vue';
+import { EVENT_STATUS, REGISTRATION_STATUS, VISIBILITY, metaOf, shortTime, toLocalInput, points } from '../utils/labels';
 import { emptyPage, loadAllPages } from '../utils/loadAll';
-import { DEFAULT_BRAND_TITLE, exportEventPoster } from '../utils/poster';
+import { DEFAULT_BRAND_TITLE, POSTER_STYLE_META, POSTER_STYLES, exportEventPoster, type PosterStyle } from '../utils/poster';
+import AppPagination from '../components/AppPagination.vue';
 
 const ui = useUiStore();
 const router = useRouter();
@@ -34,8 +36,10 @@ const sceneGroups = computed(() => {
 });
 /** 当前选中的场景，用于在表单上提示其场地地址 */
 const selectedScene = computed(() => sceneOptions.value.find((x) => x.id === form.sceneId) ?? null);
-/** 当前选中的模特：指定后「模特照片」只能取该模特照片库中的图 */
-const selectedModel = computed(() => modelOptions.value.find((m) => m.id === form.modelId) ?? null);
+/**
+ * 模特不再区分主副：每一位都能各自选照片与服装。
+ * 「第一位」只额外承担列表封面的角色（见 buildBase 的 coverUrl / posterUrls）。
+ */
 const loading = ref(true);
 const keyword = ref('');
 const filterVisibility = ref('');
@@ -45,6 +49,8 @@ const qrUrl = ref<string | null>(null);
 const siteQrUrl = ref<string | null>(null);
 /** 海报左上角标题：null 表示使用内置默认文案 */
 const brandTitle = ref<string | null>(null);
+/** 设计器保存的自定义版式；null 表示未自定义，导出时按所选预设渲染 */
+const savedLayout = ref<PosterLayoutDto | null>(null);
 const qrDialogOpen = ref(false);
 const qrSaving = ref(false);
 const qrDraft = ref<string[]>([]);
@@ -96,10 +102,12 @@ async function load(): Promise<void> {
       qrUrl.value = poster.qrUrl;
       siteQrUrl.value = poster.siteQrUrl;
       brandTitle.value = poster.brandTitle;
+      savedLayout.value = poster.layout;
     } catch {
       qrUrl.value = null;
       siteQrUrl.value = null;
       brandTitle.value = null;
+      savedLayout.value = null;
     }
   } catch {    // 统一错误提示
   } finally {
@@ -113,6 +121,18 @@ function search(): void {
 }
 function goPage(next: number): void {
   page.value = Math.min(Math.max(1, next), pageCount.value);
+  void load();
+}
+/** 分页组件回调（页码已由组件保证合法） */
+function goPageTo(next: number): void {
+  if (next === page.value) return;
+  page.value = next;
+  void load();
+}
+/** 切换每页条数：回到第 1 页，避免页码越界 */
+function changePageSize(size: number): void {
+  pageSize.value = size;
+  page.value = 1;
   void load();
 }
 onMounted(async () => {
@@ -142,7 +162,7 @@ const emptyForm = () => ({
   venue: '咕咕摄影棚',
   scene: '',
   ratioLabel: '4V1',
-  modelId: '',
+  modelIds: [] as string[],
   sceneId: '',
   visibility: 'PUBLIC' as 'PUBLIC' | 'VIP' | 'SVIP',
   registerMinLevel: 'NONE' as 'NONE' | 'VIP' | 'SVIP',
@@ -152,11 +172,19 @@ const emptyForm = () => ({
   vipYuan: 169,
   svipYuan: 149,
   allowCoupon: true,
+  allowProxyShoot: false,
   refundFreeHours: 48,
   refundFeeRatio: 0,
   notice: '',
   posters: [] as string[],
-  wardrobe: [] as string[],
+  /** 未指定模特时整场共用的一组服装图（有模特时按模特分开填，见 modelWardrobes） */
+  wardrobeShared: [] as string[],
+  /**
+   * 每位模特各自的当日服装图，与 `modelIds` 按下标一一对应。
+   */
+  modelWardrobes: [] as string[][],
+  /** 每位模特各自的本场照片，与 `modelIds` 按下标一一对应 */
+  modelPhotos: [] as string[][],
   venuePhotos: [] as string[],
 });
 
@@ -185,15 +213,22 @@ function upcomingSundayAt(hour: number, minute: number): Date {
   return d;
 }
 
+/** 每场默认时长 */
+const SESSION_MINUTES = 60;
+/** 场间休息（上一场结束后隔多久开始下一场） */
+const SESSION_BREAK_MINUTES = 10;
+
 /**
- * 默认三条时段：第一条是「当前周日 15:00–16:00」，
- * 之后每条开始与结束各顺延 10 分钟（减少人工录入）。
+ * 默认三条时段：第一场「最近周日 15:00–16:00」，
+ * 之后每场在**上一场结束后休息 10 分钟**再开始（15:00 / 16:10 / 17:20），
+ * 不是首尾各顺延 10 分钟——那样三场会互相重叠。
  */
 function defaultSessions(): Array<{ label: string; startAt: string; endAt: string; capacity: number }> {
   const base = upcomingSundayAt(15, 0);
-  return [0, 10, 20].map((offsetMin, i) => {
-    const start = new Date(base.getTime() + offsetMin * 60_000);
-    const end = new Date(start.getTime() + 60 * 60_000);
+  const stepMs = (SESSION_MINUTES + SESSION_BREAK_MINUTES) * 60_000;
+  return [0, 1, 2].map((i) => {
+    const start = new Date(base.getTime() + i * stepMs);
+    const end = new Date(start.getTime() + SESSION_MINUTES * 60_000);
     return {
       label: `第${i + 1}场`,
       startAt: toLocalInput(start.toISOString()),
@@ -231,7 +266,7 @@ function openEdit(e: EventDto): void {
     venue: e.venue,
     scene: e.scene ?? '',
     ratioLabel: e.ratioLabel ?? '',
-    modelId: e.modelId ?? '',
+    modelIds: [...(e.models?.length ? e.models.map((m) => m.id) : (e.modelId ? [e.modelId] : []))],
     sceneId: e.sceneId ?? '',
     visibility: e.visibility,
     registerMinLevel: e.registerMinLevel,
@@ -241,34 +276,65 @@ function openEdit(e: EventDto): void {
     vipYuan: (e.prices.find((p) => p.level === 'VIP')?.priceCent ?? e.feeCent) / 100,
     svipYuan: (e.prices.find((p) => p.level === 'SVIP')?.priceCent ?? e.feeCent) / 100,
     allowCoupon: e.allowCoupon,
+    allowProxyShoot: e.allowProxyShoot,
     refundFreeHours: e.refundPolicy.freeCancelBeforeHours,
     refundFeeRatio: e.refundPolicy.feeRatio,
     notice: e.notice ?? '',
     posters: [...(e.posterUrls?.length ? e.posterUrls : e.coverUrl ? [e.coverUrl] : [])].slice(0, 1),
-    wardrobe: [...(e.wardrobeUrls ?? [])],
+    wardrobeShared: [...(e.wardrobeUrls ?? [])],
+    /**
+     * 照片与服装都按模特逐个回填。`modelSlots` 是服务端算好的权威值
+     * （已内置「该模特自己的 → 整场共用 → 档案首图」的回退），直接用即可。
+     */
+    modelWardrobes: (e.models ?? []).map((m, i) => {
+      const slot = e.modelSlots?.find((s) => s.modelId === m.id) ?? e.modelSlots?.[i];
+      return [...(slot?.wardrobeUrls ?? e.wardrobeUrls ?? [])];
+    }),
+    modelPhotos: (e.models ?? []).map((m, i) => {
+      const slot = e.modelSlots?.find((s) => s.modelId === m.id) ?? e.modelSlots?.[i];
+      return [...(slot?.photoUrls ?? [])].slice(0, 1);
+    }),
     venuePhotos: [...(e.venueUrls ?? [])],
   });
-  sessions.value = e.sessions.map((s) => ({
-    id: s.id,
-    label: s.label,
-    startAt: toLocalInput(s.startAt),
-    endAt: toLocalInput(s.endAt),
-    capacity: s.capacity,
-  }));
+  // 代拍行由服务端维护（kind=PROXY），不参与常规时段的编辑与提交
+  sessions.value = e.sessions
+    .filter((s) => s.kind !== 'PROXY')
+    .map((s) => ({
+      id: s.id,
+      label: s.label,
+      startAt: toLocalInput(s.startAt),
+      endAt: toLocalInput(s.endAt),
+      capacity: s.capacity,
+    }));
   pristine = {
-    form: { ...form, posters: [...form.posters], wardrobe: [...form.wardrobe], venuePhotos: [...form.venuePhotos] },
+    form: {
+      ...form,
+      posters: [...form.posters],
+      wardrobeShared: [...form.wardrobeShared],
+      // 二维数组要深拷贝一层，否则改表单会连带改到快照，差量比对失效
+      modelWardrobes: form.modelWardrobes.map((w) => [...w]),
+      modelPhotos: form.modelPhotos.map((p) => [...p]),
+      modelIds: [...form.modelIds],
+      venuePhotos: [...form.venuePhotos],
+    },
     sessions: sessions.value.map((s) => ({ ...s })),
   };
   dialogOpen.value = true;
 }
 
-/** 追加一条时段：沿用上一条的节奏顺延 10 分钟，仍可手工修改 */
+/**
+ * 追加一条时段：从**上一场结束时间 + 10 分钟休息**开始，时长沿用上一场（拿不到按 60 分钟）。
+ * 仍可手工修改。
+ */
 function addSession(): void {
   const last = sessions.value[sessions.value.length - 1];
-  const start = last?.startAt ? new Date(last.startAt) : null;
-  const end = last?.endAt ? new Date(last.endAt) : null;
-  const nextStart = start ? new Date(start.getTime() + 10 * 60_000) : null;
-  const nextEnd = end ? new Date(end.getTime() + 10 * 60_000) : null;
+  const lastStart = last?.startAt ? new Date(last.startAt) : null;
+  const lastEnd = last?.endAt ? new Date(last.endAt) : null;
+  const durationMs = lastStart && lastEnd && lastEnd.getTime() > lastStart.getTime()
+    ? lastEnd.getTime() - lastStart.getTime()
+    : SESSION_MINUTES * 60_000;
+  const nextStart = lastEnd ? new Date(lastEnd.getTime() + SESSION_BREAK_MINUTES * 60_000) : null;
+  const nextEnd = nextStart ? new Date(nextStart.getTime() + durationMs) : null;
   sessions.value.push({
     label: `第${sessions.value.length + 1}场`,
     startAt: nextStart ? toLocalInput(nextStart.toISOString()) : '',
@@ -293,27 +359,59 @@ function onSceneChange(): void {
 }
 
 /**
- * 切换模特（仅用户手动改下拉时触发）：
- * 模特照片只能取自该模特照片库，并随机带出一张作为本场模特图（同时是列表封面）。
- * 清空模特不动已选图片，回到自由上传；模特无照片时清空并给出提示。
+ * 模特下拉变化：为新增的模特补齐照片/服装槽位，并给还没有照片的模特随机带出一张。
+ *
+ * 不再区分主副模特 —— 每一位的配置方式完全一致，第一位只额外承担「列表封面」的角色。
  */
-function onModelChange(): void {
-  const m = selectedModel.value;
-  if (!m) return;
-  const photos = m.photoUrls ?? [];
-  form.posters = photos.length ? [photos[Math.floor(Math.random() * photos.length)]] : [];
+function onModelsChange(): void {
+  const ids = form.modelIds;
+
+  // 槽位与 modelIds 同长：多出来的截掉，少了的补空数组
+  const resize = (list: string[][]): string[][] =>
+    ids.map((_, i) => list[i] ?? []);
+  form.modelWardrobes = resize(form.modelWardrobes);
+  form.modelPhotos = resize(form.modelPhotos);
+
+  ids.forEach((mid, i) => {
+    const photos = modelPhotoPool(mid);
+    if (form.modelPhotos[i]?.[0]) {
+      // 已选图仍在该模特库里就保留；换过模特则重新随机
+      if (photos.includes(form.modelPhotos[i]![0]!)) return;
+    }
+    form.modelPhotos[i] = photos.length
+      ? [photos[Math.floor(Math.random() * photos.length)]!]
+      : [];
+  });
+
+  // 列表封面跟随第一位模特
+  form.posters = form.modelPhotos[0]?.[0] ? [form.modelPhotos[0]![0]!] : [];
 }
 
-function pickModelPhoto(url: string): void {
-  form.posters = [url];
+/** 某位模特的照片库（用于选图） */
+function modelPhotoPool(modelId: string): string[] {
+  return modelOptions.value.find((m) => m.id === modelId)?.photoUrls ?? [];
+}
+
+function modelNameOf(modelId: string): string {
+  return modelOptions.value.find((m) => m.id === modelId)?.stageName ?? '未命名模特';
+}
+
+function pickModelPhotoAt(index: number, url: string): void {
+  form.modelPhotos[index] = [url];
+  // 第一位模特的照片同时作为列表封面
+  if (index === 0) form.posters = [url];
 }
 
 /** 随机换一张：尽量避开当前图，只有一张时保持不变 */
-function randomModelPhoto(): void {
-  const photos = selectedModel.value?.photoUrls ?? [];
-  const candidates = photos.length > 1 ? photos.filter((u) => u !== form.posters[0]) : photos;
+function randomModelPhotoAt(index: number): void {
+  const mid = form.modelIds[index];
+  if (!mid) return;
+  const photos = modelPhotoPool(mid);
+  const current = form.modelPhotos[index]?.[0];
+  const candidates = photos.length > 1 ? photos.filter((u) => u !== current) : photos;
   if (!candidates.length) return;
-  form.posters = [candidates[Math.floor(Math.random() * candidates.length)]];
+  form.modelPhotos[index] = [candidates[Math.floor(Math.random() * candidates.length)]!];
+  if (index === 0) form.posters = [form.modelPhotos[index]![0]!];
 }
 
 const cent = (y: number) => Math.round(Number(y) * 100);
@@ -333,18 +431,29 @@ function buildBase(f: FormState, sess: SessionRow[]) {
     scene: f.scene.trim() || null,
     notice: f.notice.trim() || null,
     ratioLabel: f.ratioLabel.trim() || null,
-    modelId: f.modelId.trim() || null,
+    modelIds: f.modelIds,
+    modelId: f.modelIds[0] ?? null,
     sceneId: f.sceneId.trim() || null,
     visibility: f.visibility,
     registerMinLevel: f.registerMinLevel,
     allowCoupon: f.allowCoupon,
+    allowProxyShoot: f.allowProxyShoot,
     refundPolicy: { freeCancelBeforeHours: Number(f.refundFreeHours), feeRatio: Number(f.refundFeeRatio) },
     registrationOpenAt: iso(f.openAt),
     registrationCloseAt: iso(f.closeAt),
     coverUrl: f.posters[0] ?? null,
     // 模特图只保留 1 张：既是列表封面，也是导出海报底图
     posterUrls: f.posters.slice(0, 1),
-    wardrobeUrls: f.wardrobe,
+    /**
+     * 整场服装图（兼容字段）：前台详情、列表与海报在拿不到「按模特的服装」时回退用它。
+     * 有模特时取第一位模特的那组；没有模特时用自由上传的那组。
+     */
+    wardrobeUrls: f.modelIds.length
+      ? (f.modelWardrobes[0] ?? [])
+      : f.wardrobeShared,
+    /** 每位模特各自的照片与服装，与 modelIds 同序 */
+    modelWardrobes: f.modelIds.map((_, i) => f.modelWardrobes[i] ?? []),
+    modelPhotos: f.modelIds.map((_, i) => f.modelPhotos[i] ?? []),
     venueUrls: f.venuePhotos,
     sessions: sess.map((s) => ({
       // 带 id = 更新已有排期；不带 = 新增。缺失的已有时段由服务端删除（有报名会被拒绝）
@@ -518,17 +627,61 @@ function hideBroken(img: Event): void {
 }
 
 /** 导出该场次海报：底图 + 信息叠加，直接下载 PNG（1080×1620） */
-async function exportPoster(e: EventDto): Promise<void> {
+async function exportPoster(e: EventDto, style: PosterStyle = 'classic'): Promise<void> {
   if (exportingId.value) return;
   exportingId.value = e.id;
   try {
-    await exportEventPoster(e, qrUrl.value, siteQrUrl.value, brandTitle.value);
-    ui.notify('海报已导出', 'success');
+    await exportEventPoster(e, qrUrl.value, brandTitle.value, {
+      style,
+      siteQrUrl: siteQrUrl.value,
+      // 后台设计器保存过版式就优先用它，否则按所选预设渲染
+      layout: savedLayout.value,
+    });
+    ui.notify(`海报已导出（${savedLayout.value ? '自定义版式' : POSTER_STYLE_META[style].label}）`, 'success');
   } catch (err) {
     ui.notify(err instanceof Error ? err.message : '导出失败，请重试', 'error');
   } finally {
     exportingId.value = null;
   }
+}
+
+/* ---------------- 海报版式选择 ---------------- */
+const posterDialogOpen = ref(false);
+const posterTarget = ref<EventDto | null>(null);
+const posterStyle = ref<PosterStyle>('classic');
+
+/** 双模特场次默认选「双人」版式，单模特默认「经典」 */
+function openPosterDialog(e: EventDto): void {
+  posterTarget.value = e;
+  posterStyle.value = (e.models?.length ?? 0) > 1 ? 'duo' : 'classic';
+  posterDialogOpen.value = true;
+}
+
+async function confirmExportPoster(): Promise<void> {
+  const target = posterTarget.value;
+  if (!target) return;
+  posterDialogOpen.value = false;
+  await exportPoster(target, posterStyle.value);
+}
+
+/* ---------------- 海报设计器（低代码拖拽） ---------------- */
+const designerOpen = ref(false);
+/** 设计器预览用的场次：优先当前点开的那个，否则用列表第一条 */
+const designerEvent = ref<EventDto | null>(null);
+
+function openDesigner(): void {
+  designerEvent.value = posterTarget.value ?? list.value[0] ?? null;
+  posterDialogOpen.value = false;
+  if (!designerEvent.value) {
+    ui.notify('还没有场次可用于预览，请先创建场次', 'error');
+    return;
+  }
+  designerOpen.value = true;
+}
+
+/** 设计器保存后把新版式同步到本地，导出时立刻生效 */
+function onLayoutSaved(next: PosterLayoutDto | null): void {
+  savedLayout.value = next;
 }
 
 function openQrDialog(): void {
@@ -598,7 +751,7 @@ async function saveQr(): Promise<void> {
             <th class="whitespace-nowrap px-3 py-2.5 font-medium" title="此刻允许报名的最低等级，可在列表直接改；与可见性独立">报名门槛</th>
             <th class="whitespace-nowrap px-3 py-2.5 font-medium">时段</th>
             <th class="whitespace-nowrap px-3 py-2.5 font-medium">容量</th>
-            <th class="whitespace-nowrap px-3 py-2.5 font-medium">公开价</th>
+            <th class="whitespace-nowrap px-3 py-2.5 font-medium">标准积分</th>
             <th class="whitespace-nowrap px-3 py-2.5 font-medium">状态</th>
             <th class="whitespace-nowrap px-3 py-2.5 text-right font-medium">操作</th>
           </tr>
@@ -633,11 +786,12 @@ async function saveQr(): Promise<void> {
               </select>
             </td>
             <td class="whitespace-nowrap px-3 py-2.5 text-slate-600">
-              {{ e.sessions.length }} 场
-              <p class="text-xs text-slate-500">{{ shortTime(e.sessions[0]?.startAt) }}</p>
+              {{ e.sessions.filter((s) => s.kind !== 'PROXY').length }} 场
+              <span v-if="e.allowProxyShoot" class="ml-1 rounded bg-slate-100 px-1 text-[11px] text-slate-600">含代拍</span>
+              <p class="text-xs text-slate-500">{{ shortTime(e.sessions.find((s) => s.kind !== 'PROXY')?.startAt) }}</p>
             </td>
             <td class="px-3 py-2.5 text-slate-600">{{ e.capacityUsed }}/{{ e.capacity }}</td>
-            <td class="px-3 py-2.5 font-medium text-slate-900">{{ yuan(e.feeCent) }}</td>
+            <td class="px-3 py-2.5 font-medium text-slate-900">{{ points(e.feeCent) }}</td>
             <td class="whitespace-nowrap px-3 py-2.5">
               <span class="rounded-full px-2 py-0.5 text-xs" :class="metaOf(EVENT_STATUS, e.status).cls">
                 {{ metaOf(EVENT_STATUS, e.status).label }}
@@ -647,7 +801,7 @@ async function saveQr(): Promise<void> {
               <el-button size="small" :type="seatsOpen && expandedId === e.id ? 'primary' : 'default'" @click="openSeats(e)">名额/名单</el-button>
               <el-button size="small" @click="goRegistrations(e)">报名名单</el-button>
               <el-button size="small" @click="openEdit(e)">编辑</el-button>
-              <el-button size="small" :loading="exportingId === e.id" @click="exportPoster(e)">导出海报</el-button>
+              <el-button size="small" :loading="exportingId === e.id" @click="openPosterDialog(e)">导出海报</el-button>
               <el-button v-if="e.status === 'DRAFT'" size="small" type="primary" @click="publishEvent(e)">发布</el-button>
               <el-button v-if="e.status === 'CANCELLED'" size="small" type="primary" @click="restoreEvent(e)">恢复</el-button>
               <el-button v-else-if="e.status !== 'DRAFT'" size="small" text type="danger" @click="cancelEvent(e)">取消</el-button>
@@ -671,14 +825,18 @@ async function saveQr(): Promise<void> {
           </div>
           <div class="min-w-0 flex-1">
             <p class="clamp-1 font-medium text-slate-900">{{ e.title }}</p>
-            <p class="mt-1 text-xs text-slate-500">{{ e.sessions.length }} 场 · {{ e.capacityUsed }}/{{ e.capacity }} 人</p>
+            <p class="mt-1 text-xs text-slate-500">
+              {{ e.sessions.filter((s) => s.kind !== 'PROXY').length }} 场 · {{ e.capacityUsed }}/{{ e.capacity }} 人
+            </p>
             <div class="mt-1.5 flex items-center gap-1.5">
               <span class="rounded-full px-1.5 py-0.5 text-[11px]" :class="metaOf(VISIBILITY, e.visibility).cls">{{ metaOf(VISIBILITY, e.visibility).label }}</span>
               <span class="rounded-full px-1.5 py-0.5 text-[11px]" :class="metaOf(EVENT_STATUS, e.status).cls">{{ metaOf(EVENT_STATUS, e.status).label }}</span>
-              <span class="text-xs font-medium text-slate-900">{{ yuan(e.feeCent) }}</span>
+              <span class="text-xs font-medium text-slate-900">{{ points(e.feeCent) }}</span>
             </div>
             <div class="mt-2 flex items-center gap-2">
               <span class="shrink-0 text-xs text-slate-500">报名门槛</span>
+              <!-- 刻意保留原生 select：按等级切换边框/底色（SVIP 金 / VIP 玫红 / NONE 中性），
+                   el-select 无法在不深度覆盖样式的前提下保留这套着色语义。 -->
               <select :value="e.registerMinLevel" :disabled="gateSavingId === e.id"
                 class="min-w-0 flex-1 rounded-lg border px-2 py-1 text-xs outline-none focus:border-blue-500 disabled:opacity-50"
                 :class="e.registerMinLevel === 'SVIP' ? 'border-amber-300 bg-amber-50 text-amber-700' : e.registerMinLevel === 'VIP' ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-slate-300 bg-white text-slate-600'"
@@ -692,7 +850,7 @@ async function saveQr(): Promise<void> {
               <el-button size="small" :type="seatsOpen && expandedId === e.id ? 'primary' : 'default'" @click="openSeats(e)">名额/名单</el-button>
               <el-button size="small" @click="goRegistrations(e)">报名名单</el-button>
               <el-button size="small" @click="openEdit(e)">编辑</el-button>
-              <el-button size="small" :loading="exportingId === e.id" @click="exportPoster(e)">导出海报</el-button>
+              <el-button size="small" :loading="exportingId === e.id" @click="openPosterDialog(e)">导出海报</el-button>
               <el-button v-if="e.status === 'DRAFT'" size="small" type="primary" @click="publishEvent(e)">发布</el-button>
               <el-button v-if="e.status === 'CANCELLED'" size="small" type="primary" @click="restoreEvent(e)">恢复</el-button>
               <el-button v-else-if="e.status !== 'DRAFT'" size="small" text type="danger" @click="cancelEvent(e)">取消</el-button>
@@ -702,12 +860,72 @@ async function saveQr(): Promise<void> {
         <div v-if="!loading && !filtered.length" class="px-3 py-12 text-center text-sm text-slate-500">还没有场次</div>
       </div>
 
-      <div v-if="pageCount > 1" class="flex items-center justify-end gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
-        <el-button size="small" :disabled="page <= 1" @click="goPage(page - 1)">上一页</el-button>
-        <span>第 {{ page }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
-        <el-button size="small" :disabled="page >= pageCount" @click="goPage(page + 1)">下一页</el-button>
-      </div>
+      <AppPagination
+        :page="page"
+        :page-size="pageSize"
+        :total="total"
+        :hide-on-single-page="true"
+        :summary="`共 ${total} 条`"
+        @change="(p) => goPageTo(p)"
+        @size-change="(s) => changePageSize(s)"
+      />
     </div>
+
+    <!-- 海报版式选择：一次导出选定样式；双模特场次默认「双人」 -->
+    <el-dialog v-model="posterDialogOpen" title="导出海报" width="min(560px, 94vw)" top="8vh">
+      <p class="mb-3 text-xs text-slate-500">
+        1080×1620 竖版 PNG。选择版式后立即下载，可重复导出多套对比。
+      </p>
+      <el-alert
+        v-if="savedLayout"
+        type="success"
+        :closable="false"
+        show-icon
+        class="!mb-3"
+        title="已保存自定义版式"
+      >
+        <template #default>
+          <span class="text-xs">
+            导出将使用你在设计器里排好的版式，下面的预设仅在取消自定义后生效。
+          </span>
+        </template>
+      </el-alert>
+      <div class="space-y-2">
+        <button v-for="st in POSTER_STYLES" :key="st" type="button"
+          class="w-full rounded-xl border px-3 py-3 text-left transition"
+          :class="posterStyle === st
+            ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/15'
+            : 'border-slate-200 hover:border-slate-300'"
+          @click="posterStyle = st">
+          <span class="flex items-center justify-between">
+            <span class="text-sm font-medium text-slate-900">{{ POSTER_STYLE_META[st].label }}</span>
+            <span v-if="st === 'duo' && (posterTarget?.models?.length ?? 0) > 1"
+              class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">推荐</span>
+          </span>
+          <span class="mt-0.5 block text-xs text-slate-500">{{ POSTER_STYLE_META[st].hint }}</span>
+        </button>
+      </div>
+
+      <!-- 低代码设计器入口：需要一张场次图来预览效果，故从具体场次进入 -->
+      <div class="mt-4 rounded-xl border border-dashed border-slate-300 p-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-800">自己排版</p>
+            <p class="mt-0.5 text-xs leading-5 text-slate-500">
+              打开设计器拖拽区块、改文案与图片，保存后所有场次都按这个版式导出。
+            </p>
+          </div>
+          <el-button size="small" type="primary" plain @click="openDesigner">打开设计器</el-button>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <el-button @click="posterDialogOpen = false">取消</el-button>
+          <el-button type="primary" :loading="!!exportingId" @click="confirmExportPoster">导出</el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- 时段名额 / 名单弹窗（点F）：哪个时段已满、还差几人、报了谁，一眼可见，且不挤占列表版面 -->
     <el-dialog v-model="seatsOpen" :title="seatsTitle" width="min(820px, 94vw)" top="6vh" @closed="expandedId = null">
@@ -719,23 +937,34 @@ async function saveQr(): Promise<void> {
               <div class="flex items-center justify-between gap-2">
                 <p class="text-sm font-medium text-slate-800">
                   {{ s.label }}
-                  <span class="ml-1 text-xs font-normal text-slate-500">{{ shortTime(s.startAt) }}</span>
+                  <!-- 代拍不限人数，也没有时间点，不显示余量与进度条 -->
+                  <span v-if="s.kind !== 'PROXY'" class="ml-1 text-xs font-normal text-slate-500">{{ shortTime(s.startAt) }}</span>
                 </p>
                 <span
+                  v-if="s.kind === 'PROXY'"
+                  class="whitespace-nowrap rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
+                >
+                  不限人数
+                </span>
+                <span
+                  v-else
                   class="whitespace-nowrap rounded-full px-2 py-0.5 text-xs"
                   :class="s.capacityUsed >= s.capacity ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-700'"
                 >
                   {{ s.capacityUsed >= s.capacity ? '已满' : `余 ${s.capacity - s.capacityUsed}` }}
                 </span>
               </div>
-              <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  class="h-full rounded-full"
-                  :class="s.capacityUsed >= s.capacity ? 'bg-rose-500' : 'bg-blue-500'"
-                  :style="{ width: `${sessionPct(s)}%` }"
-                ></div>
-              </div>
-              <p class="mt-1 text-xs text-slate-500">{{ s.capacityUsed }}/{{ s.capacity }} 人</p>
+              <template v-if="s.kind !== 'PROXY'">
+                <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    class="h-full rounded-full"
+                    :class="s.capacityUsed >= s.capacity ? 'bg-rose-500' : 'bg-blue-500'"
+                    :style="{ width: `${sessionPct(s)}%` }"
+                  ></div>
+                </div>
+                <p class="mt-1 text-xs text-slate-500">{{ s.capacityUsed }}/{{ s.capacity }} 人</p>
+              </template>
+              <p v-else class="mt-1 text-xs text-slate-500">已约 {{ s.capacityUsed }} 单</p>
               <div class="mt-2 flex flex-wrap gap-1.5">
                 <span
                   v-for="r in regsOf(expandedEvent, s)"
@@ -770,125 +999,143 @@ async function saveQr(): Promise<void> {
         <!-- 基本信息 -->
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">基本信息</h4>
-          <label class="mb-3 block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">从场景库选择（可选）</span>
-            <select v-model="form.sceneId" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" @change="onSceneChange">
-              <option value="">暂不选择 / 手动填写</option>
-              <optgroup v-for="g in sceneGroups" :key="g.venue" :label="g.venue">
-                <option v-for="s in g.scenes" :key="s.id" :value="s.id">{{ s.name }}</option>
-              </optgroup>
-            </select>
-            <span class="mt-1 block text-xs text-slate-500">按场地分组，选择后自动填入场地名、场景名与场地照片，仍可手动修改；场景库在「场景管理」里维护。</span>
-            <span v-if="selectedScene?.address" class="mt-1 block text-xs text-slate-500">场地地址：{{ selectedScene.address }}</span>
-          </label>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场次标题 <i class="text-rose-500">*</i></span>
-              <input v-model="form.title" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：猫爪社摄影会·犬了个牙" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">副标题</span>
-              <input v-model="form.subtitle" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：仪玄OL" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场地 <i class="text-rose-500">*</i></span>
-              <input v-model="form.venue" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：咕咕摄影棚" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">场景</span>
-              <input v-model="form.scene" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：办公室景" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">模特</span>
-              <select v-model="form.modelId" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" @change="onModelChange">
-                <option value="">暂不指定</option>
-                <option v-for="m in modelOptions" :key="m.id" :value="m.id">{{ m.stageName }}</option>
-              </select>
-              <span class="mt-1 block text-xs text-slate-500">在「模特管理」里建档后可从下拉直接选；选定后下方模特照片只能取自该模特照片库</span>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">人数比</span>
-              <input v-model="form.ratioLabel" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="例：4V1" />
-            </label>
-          </div>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="从场景库">
+              <div class="w-full">
+                <el-select v-model="form.sceneId" placeholder="暂不选择 / 手动填写"
+                  clearable filterable class="!w-full" @change="onSceneChange">
+                  <el-option-group v-for="g in sceneGroups" :key="g.venue" :label="g.venue">
+                    <el-option v-for="s in g.scenes" :key="s.id" :label="s.name" :value="s.id" />
+                  </el-option-group>
+                </el-select>
+                <span class="mt-1 block text-xs text-slate-500">按场地分组，选择后自动填入场地名、场景名与场地照片，仍可手动修改；场景库在「场景管理」里维护。</span>
+                <span v-if="selectedScene?.address" class="mt-1 block text-xs text-slate-500">场地地址：{{ selectedScene.address }}</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="场次标题" required>
+              <el-input v-model="form.title" placeholder="例：猫爪社摄影会·犬了个牙" clearable />
+            </el-form-item>
+            <el-form-item label="副标题">
+              <el-input v-model="form.subtitle" placeholder="例：仪玄OL" clearable />
+            </el-form-item>
+            <el-form-item label="场地" required>
+              <el-input v-model="form.venue" placeholder="例：咕咕摄影棚" clearable />
+            </el-form-item>
+            <el-form-item label="场景">
+              <el-input v-model="form.scene" placeholder="例：办公室景" clearable />
+            </el-form-item>
+            <el-form-item label="模特">
+              <div class="w-full">
+                <!-- 多模特：第一位即主模特，海报主图与模特照片库仍以它为准 -->
+                <el-select v-model="form.modelIds" multiple collapse-tags collapse-tags-tooltip
+                  placeholder="暂不指定（可多选，第一位为主模特）" clearable filterable
+                  class="!w-full" @change="onModelsChange">
+                  <el-option v-for="m in modelOptions" :key="m.id" :label="m.stageName" :value="m.id" />
+                </el-select>
+                <span class="mt-1 block text-xs text-slate-500">
+                  双模特场次请选 2 位；第一位是主模特，下方「模特照片」默认取自 TA 的照片库。
+                </span>
+              </div>
+            </el-form-item>
+            <el-form-item label="人数比">
+              <el-input v-model="form.ratioLabel" placeholder="例：4V1" clearable />
+            </el-form-item>
+          </el-form>
         </section>
 
         <!-- 报名时间 -->
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">报名时间</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">报名开始 <i class="text-rose-500">*</i></span>
-              <input v-model="form.openAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">报名截止 <i class="text-rose-500">*</i></span>
-              <input v-model="form.closeAt" type="datetime-local" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-          </div>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="报名开始" required>
+              <el-date-picker v-model="form.openAt" type="datetime" placeholder="选择报名开始"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+            <el-form-item label="报名截止" required>
+              <el-date-picker v-model="form.closeAt" type="datetime" placeholder="选择报名截止"
+                format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" class="!w-full" />
+            </el-form-item>
+          </el-form>
         </section>
 
         <!-- 可见性与价格 -->
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">可见性与价格</h4>
-          <div class="grid gap-3 sm:grid-cols-4">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">可见性</span>
-              <select v-model="form.visibility" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500">
-                <option value="PUBLIC">公开</option>
-                <option value="VIP">仅 VIP</option>
-                <option value="SVIP">仅 SVIP</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">公开价（元）</span>
-              <input v-model.number="form.publicYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">VIP 价（元）</span>
-              <input v-model.number="form.vipYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">SVIP 价（元）</span>
-              <input v-model.number="form.svipYuan" type="number" min="0" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            </label>
-          </div>
-          <label class="mt-3 block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">当前可报名等级</span>
-            <select v-model="form.registerMinLevel" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 sm:w-64">
-              <option value="NONE">所有人（含非会员）</option>
-              <option value="VIP">VIP 及以上</option>
-              <option value="SVIP">仅 SVIP</option>
-            </select>
-            <span class="mt-1 block text-xs text-slate-500">人工分阶段放开：先「仅 SVIP」，SVIP 报满后改「VIP 及以上」，最后改「所有人」。与「可见性」独立——能看到不代表此刻能报名。</span>
-          </label>
-          <p v-if="hasRegistrations" class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            该场次已有 {{ editing?.capacityUsed }} 人报名：可以改时间、加场、改价；有报名的时段不能删除，容量也不能小于已报名人数。
-          </p>
-          <label class="mt-3 flex items-start gap-2 text-sm text-slate-700">
-            <input v-model="form.allowCoupon" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30" />
-            <span>
-              允许报名时使用优惠券
-              <span class="mt-0.5 block text-xs text-slate-500">关闭后本场新报名不能带券；已产生的报名与退款不受影响。</span>
-            </span>
-          </label>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="可见性">
+              <el-select v-model="form.visibility" class="!w-40">
+                <el-option label="公开" value="PUBLIC" />
+                <el-option label="仅 VIP" value="VIP" />
+                <el-option label="仅 SVIP" value="SVIP" />
+              </el-select>
+            </el-form-item>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <el-form-item label="标准积分">
+                <el-input-number v-model="form.publicYuan" :min="0" :step="1"
+                  controls-position="right" class="!w-32" />
+                <span class="ml-1 text-xs text-slate-500">积分</span>
+              </el-form-item>
+              <el-form-item label="VIP 积分">
+                <el-input-number v-model="form.vipYuan" :min="0" :step="1"
+                  controls-position="right" class="!w-32" />
+                <span class="ml-1 text-xs text-slate-500">积分</span>
+              </el-form-item>
+              <el-form-item label="SVIP 积分">
+                <el-input-number v-model="form.svipYuan" :min="0" :step="1"
+                  controls-position="right" class="!w-32" />
+                <span class="ml-1 text-xs text-slate-500">积分</span>
+              </el-form-item>
+            </div>
+            <el-form-item label="可报名等级">
+              <div>
+                <el-select v-model="form.registerMinLevel" class="!w-64">
+                  <el-option label="所有人（含非会员）" value="NONE" />
+                  <el-option label="VIP 及以上" value="VIP" />
+                  <el-option label="仅 SVIP" value="SVIP" />
+                </el-select>
+                <span class="mt-1 block text-xs text-slate-500">人工分阶段放开：先「仅 SVIP」，SVIP 报满后改「VIP 及以上」，最后改「所有人」。与「可见性」独立——能看到不代表此刻能报名。</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="优惠券">
+              <div>
+                <el-checkbox v-model="form.allowCoupon">允许报名时使用优惠券</el-checkbox>
+                <span class="mt-0.5 block text-xs text-slate-500">关闭后本场新报名不能带券；已产生的报名与退款不受影响。</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="代拍">
+              <div>
+                <el-checkbox v-model="form.allowProxyShoot">本场支持代拍</el-checkbox>
+                <span class="mt-0.5 block text-xs text-slate-500">
+                  勾选后自动生成一个独立的「代拍」报名项（不占用任何时段，会员无需到场），价格与正常报名一致。
+                  取消勾选会删除该项目；若已有代拍报名则不允许取消。
+                </span>
+              </div>
+            </el-form-item>
+          </el-form>
+          <el-alert v-if="hasRegistrations" type="warning" :closable="false" show-icon
+            :title="`该场次已有 ${editing?.capacityUsed} 人报名：可以改时间、加场、改价；有报名的时段不能删除，容量也不能小于已报名人数。`" />
         </section>
 
         <!-- 候补已下线（2026-11-13）：满员即不可报名，故此处只有退款规则，没有候补开关 -->
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">退款规则</h4>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">免费取消提前量（小时）</span>
-              <input v-model.number="form.refundFreeHours" type="number" min="0" max="720" step="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-              <span class="mt-1 block text-xs text-slate-500">开始前 N 小时内取消将收取手续费</span>
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium text-slate-600">退款手续费率（0–1）</span>
-              <input v-model.number="form.refundFeeRatio" type="number" min="0" max="1" step="0.01" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-              <span class="mt-1 block text-xs text-slate-500">0.1 表示扣除 10%；0 表示全额退款</span>
-            </label>
-          </div>
+          <el-form label-width="120px" label-position="left">
+            <el-form-item label="免费取消提前量">
+              <div>
+                <el-input-number v-model="form.refundFreeHours" :min="0" :max="720" :step="1"
+                  controls-position="right" class="!w-32" />
+                <span class="ml-1 text-xs text-slate-500">小时</span>
+                <span class="mt-1 block text-xs text-slate-500">开始前 N 小时内取消将收取手续费</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="退款手续费率">
+              <div>
+                <el-input-number v-model="form.refundFeeRatio" :min="0" :max="1" :step="0.01"
+                  :precision="2" controls-position="right" class="!w-32" />
+                <span class="mt-1 block text-xs text-slate-500">0.1 表示扣除 10%；0 表示全额退款</span>
+              </div>
+            </el-form-item>
+          </el-form>
         </section>
 
         <!-- 时段 -->
@@ -900,22 +1147,25 @@ async function saveQr(): Promise<void> {
           <div class="space-y-2">
             <div v-for="(s, i) in sessions" :key="i"
               class="grid grid-cols-2 items-end gap-2 rounded-lg bg-slate-50 p-2.5 sm:grid-cols-12">
-              <label class="col-span-2 block sm:col-span-2">
+              <div class="col-span-2 sm:col-span-2">
                 <span class="mb-1 block text-xs text-slate-500">名称</span>
-                <input v-model="s.label" class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" placeholder="第一场" />
-              </label>
-              <label class="col-span-2 block sm:col-span-3">
+                <el-input v-model="s.label" placeholder="第一场" />
+              </div>
+              <div class="col-span-2 sm:col-span-3">
                 <span class="mb-1 block text-xs text-slate-500">开始</span>
-                <input v-model="s.startAt" type="datetime-local" class="w-full rounded border border-slate-300 px-2 py-1.5 text-xs" />
-              </label>
-              <label class="col-span-2 block sm:col-span-3">
+                <el-date-picker v-model="s.startAt" type="datetime" placeholder="开始"
+                  format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" size="small" class="!w-full" />
+              </div>
+              <div class="col-span-2 sm:col-span-3">
                 <span class="mb-1 block text-xs text-slate-500">结束</span>
-                <input v-model="s.endAt" type="datetime-local" class="w-full rounded border border-slate-300 px-2 py-1.5 text-xs" />
-              </label>
-              <label class="col-span-2 block sm:col-span-2">
+                <el-date-picker v-model="s.endAt" type="datetime" placeholder="结束"
+                  format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DDTHH:mm:ss" size="small" class="!w-full" />
+              </div>
+              <div class="col-span-2 sm:col-span-2">
                 <span class="mb-1 block text-xs text-slate-500">容量</span>
-                <input v-model.number="s.capacity" type="number" min="1" class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
-              </label>
+                <el-input-number v-model="s.capacity" :min="1" :step="1"
+                  controls-position="right" size="small" class="!w-full" />
+              </div>
               <div class="col-span-2 flex justify-end sm:col-span-2">
                 <el-button size="small" text type="danger" :disabled="sessions.length <= 1" @click="removeSession(i)">删除</el-button>
               </div>
@@ -925,67 +1175,84 @@ async function saveQr(): Promise<void> {
 
         <!-- 图片 -->
         <section class="rounded-xl border border-slate-200 p-4">
-          <h4 class="mb-3 text-sm font-semibold text-slate-900">图片</h4>
-          <div class="space-y-4">
-            <div>
-              <p class="mb-1.5 text-xs font-medium text-slate-600">模特照片</p>
+          <h4 class="mb-1 text-sm font-semibold text-slate-900">图片</h4>
+          <p class="mb-3 text-xs leading-5 text-slate-500">
+            每位模特各自一张本场照片 + 一组当日服装；场地照片由整场共用，不需要按模特重复上传。
+          </p>
 
-              <!-- 已指定模特：来源锁定为该模特照片库，切换模特时自动随机带出一张 -->
-              <template v-if="selectedModel">
-                <div v-if="selectedModel.photoUrls.length" class="space-y-2">
-                  <div class="flex flex-wrap items-start gap-3">
-                    <div class="h-24 w-24 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                      <img v-if="form.posters[0]" :src="form.posters[0]" alt="" class="h-full w-full object-cover" />
-                      <span v-else class="flex h-full items-center justify-center px-2 text-center text-xs text-slate-500">未选择</span>
-                    </div>
-                    <div class="min-w-0 text-xs leading-relaxed text-slate-500">
-                      <p>已指定模特 <span class="font-medium text-slate-700">{{ selectedModel.stageName }}</span>，只能从 TA 的照片库里选 1 张。</p>
-                      <p v-if="form.posters[0]" class="text-slate-500">当前这张就是列表封面与导出海报主图。</p>
-                      <button type="button" class="mt-1 text-blue-600 hover:underline" @click="randomModelPhoto">随机换一张</button>
-                    </div>
+          <!-- 每位模特一张卡片：不分主副，配置方式完全一致 -->
+          <div v-if="form.modelIds.length" class="space-y-3">
+            <div v-for="(mid, idx) in form.modelIds" :key="mid"
+              class="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <span class="text-sm font-medium text-slate-800">
+                  模特 {{ idx + 1 }} · {{ modelNameOf(mid) }}
+                </span>
+                <span class="text-[11px] text-slate-400">照片与服装各自独立</span>
+              </div>
+
+              <!-- 本场照片 -->
+              <p class="mb-1.5 text-xs font-medium text-slate-600">本场照片</p>
+              <div v-if="modelPhotoPool(mid).length" class="space-y-2">
+                <div class="flex flex-wrap items-start gap-3">
+                  <div class="h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+                    <img v-if="form.modelPhotos[idx]?.[0]" :src="form.modelPhotos[idx]![0]" alt=""
+                      class="h-full w-full object-cover" />
+                    <span v-else class="flex h-full items-center justify-center px-1 text-center text-[11px] text-slate-500">未选</span>
                   </div>
-                  <div class="flex flex-wrap gap-2">
-                    <button v-for="url in selectedModel.photoUrls" :key="url" type="button"
-                      class="relative h-16 w-16 overflow-hidden rounded-lg border-2 transition"
-                      :class="form.posters[0] === url ? 'border-blue-500' : 'border-slate-200 hover:border-slate-400'"
-                      @click="pickModelPhoto(url)">
-                      <img :src="url" alt="" class="h-full w-full object-cover" />
-                      <span v-if="form.posters[0] === url"
-                        class="absolute inset-x-0 bottom-0 bg-blue-500/85 py-0.5 text-center text-[11px] text-white">已选</span>
-                    </button>
+                  <div class="min-w-0 text-xs leading-relaxed text-slate-500">
+                    <p>从 <span class="font-medium text-slate-700">{{ modelNameOf(mid) }}</span> 的照片库里选 1 张。</p>
+                    <p v-if="idx === 0" class="text-slate-400">第一位模特的照片同时作为列表封面。</p>
+                    <button type="button" class="mt-1 text-blue-600 hover:underline"
+                      @click="randomModelPhotoAt(idx)">随机换一张</button>
                   </div>
                 </div>
-                <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
-                  该模特还没有上传照片。请先到「模特管理」补充，或把模特改为「暂不指定」后自由上传。
-                </p>
-                <p class="mt-1.5 text-xs text-slate-500">照片来自「模特管理」的模特照片库；换模特会重新随机一张。</p>
-              </template>
+                <div class="flex flex-wrap gap-2">
+                  <button v-for="url in modelPhotoPool(mid)" :key="url" type="button"
+                    class="relative h-14 w-14 overflow-hidden rounded-lg border-2 transition"
+                    :class="form.modelPhotos[idx]?.[0] === url ? 'border-blue-500' : 'border-slate-200 hover:border-slate-400'"
+                    @click="pickModelPhotoAt(idx, url)">
+                    <img :src="url" alt="" class="h-full w-full object-cover" />
+                    <span v-if="form.modelPhotos[idx]?.[0] === url"
+                      class="absolute inset-x-0 bottom-0 bg-blue-500/85 py-0.5 text-center text-[10px] text-white">已选</span>
+                  </button>
+                </div>
+              </div>
+              <p v-else class="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3 text-center text-xs text-slate-500">
+                该模特还没有照片，请先到「模特管理」补充。
+              </p>
 
-              <!-- 未指定模特：自由上传 1 张 -->
-              <template v-else>
-                <ImageUploader v-model="form.posters" :max="1" cover-hint="" />
-                <p class="mt-1 text-xs text-slate-500">未指定模特时可自由上传 1 张；在上方「模特」里选定模特后，会自动改用该模特照片库并随机带出一张。</p>
-              </template>
+              <!-- 当日服装 -->
+              <p class="mb-1.5 mt-3 text-xs font-medium text-slate-600">当日服装</p>
+              <ImageUploader v-model="form.modelWardrobes[idx]" :max="9" cover-hint="" />
             </div>
-            <div>
-              <p class="mb-1.5 text-xs font-medium text-slate-600">当日服装</p>
-              <ImageUploader v-model="form.wardrobe" :max="9" cover-hint="" />
-            </div>
-            <div>
-              <p class="mb-1.5 text-xs font-medium text-slate-600">场地照片</p>
-              <ImageUploader v-model="form.venuePhotos" :max="9" cover-hint="" />
-            </div>
+          </div>
+
+          <!-- 未指定模特：整场自由上传 -->
+          <div v-else>
+            <p class="mb-1.5 text-xs font-medium text-slate-600">模特照片</p>
+            <ImageUploader v-model="form.posters" :max="1" cover-hint="" />
+            <p class="mb-1.5 mt-3 text-xs font-medium text-slate-600">当日服装</p>
+            <ImageUploader v-model="form.wardrobeShared" :max="9" cover-hint="" />
+            <p class="mt-1 text-xs text-slate-500">未指定模特时可自由上传；选定模特后会自动改用该模特照片库。</p>
+          </div>
+
+          <div class="mt-4 border-t border-slate-200 pt-3">
+            <p class="mb-1.5 text-xs font-medium text-slate-600">场地照片</p>
+            <ImageUploader v-model="form.venuePhotos" :max="9" cover-hint="" />
+            <p class="mt-1 text-xs text-slate-400">整场共用一组，不分模特。</p>
           </div>
         </section>
 
         <!-- 须知 -->
         <section class="rounded-xl border border-slate-200 p-4">
           <h4 class="mb-3 text-sm font-semibold text-slate-900">报名须知</h4>
-          <label class="block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">须知内容（每行一条）</span>
-            <textarea v-model="form.notice" rows="4" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-              placeholder="例：&#10;1. 请提前 10 分钟到场签到&#10;2. 开始前 48 小时可免费取消" />
-          </label>
+          <el-form label-width="96px" label-position="left">
+            <el-form-item label="须知内容">
+              <el-input v-model="form.notice" type="textarea" :rows="4"
+                placeholder="例：&#10;1. 请提前 10 分钟到场签到&#10;2. 开始前 48 小时可免费取消" />
+            </el-form-item>
+          </el-form>
         </section>
       </div>
 
@@ -1002,16 +1269,15 @@ async function saveQr(): Promise<void> {
       <p class="mb-3 text-sm text-slate-500">
         标题与两张码统一用于导出的场次海报；客服码同时展示在前台报名页。留空保存即恢复默认 / 清除。
       </p>
-      <label class="mb-4 block">
-        <span class="mb-1.5 block text-xs font-medium text-slate-600">左上角标题</span>
-        <input
-          v-model="brandTitleDraft"
-          maxlength="32"
-          class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-          :placeholder="DEFAULT_BRAND_TITLE"
-        />
-        <span class="mt-1 block text-xs text-slate-500">留空使用默认标题：{{ DEFAULT_BRAND_TITLE }}</span>
-      </label>
+      <el-form label-width="96px" label-position="left">
+        <el-form-item label="左上角标题">
+          <div class="w-full">
+            <el-input v-model="brandTitleDraft" maxlength="32" show-word-limit
+              :placeholder="DEFAULT_BRAND_TITLE" clearable />
+            <span class="mt-1 block text-xs text-slate-500">留空使用默认标题：{{ DEFAULT_BRAND_TITLE }}</span>
+          </div>
+        </el-form-item>
+      </el-form>
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <p class="mb-1.5 text-xs font-medium text-slate-600">网站二维码（上方）</p>
@@ -1029,6 +1295,33 @@ async function saveQr(): Promise<void> {
         <div class="flex items-center justify-end gap-2">
           <el-button @click="qrDialogOpen = false">取消</el-button>
           <el-button type="primary" :loading="qrSaving" @click="saveQr">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 海报设计器：低代码拖拽排版，保存后所有场次共用此版式 -->
+    <el-dialog
+      v-model="designerOpen"
+      title="海报设计器"
+      width="min(1180px, 96vw)"
+      top="4vh"
+      destroy-on-close
+      class="poster-designer-dialog"
+    >
+      <PosterDesigner
+        v-if="designerOpen && designerEvent"
+        :event="designerEvent"
+        :brand-title="brandTitle"
+        :qr-url="qrUrl"
+        :site-qr-url="siteQrUrl"
+        @saved="onLayoutSaved"
+      />
+      <template #footer>
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[11px] text-slate-500">
+            版式对所有场次生效；二维码与标题仍在「海报配置」里改。
+          </span>
+          <el-button @click="designerOpen = false">关闭</el-button>
         </div>
       </template>
     </el-dialog>

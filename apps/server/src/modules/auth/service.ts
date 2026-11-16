@@ -423,3 +423,87 @@ export async function logout(userId: string, refreshToken: string | undefined, r
   clearAuthCookies(res);
   void recordAudit({ action: 'LOGOUT', targetType: 'user', targetId: userId, actorId: userId });
 }
+
+/**
+ * 本人注销账号（履行业务记录留存义务的「软删除 + 匿名化」）。
+ *
+ * 为什么不是物理 DELETE：
+ *   - 报名、积分流水、审计日志需要保留（《电子商务法》/ 会计留存与争议举证），物理删除会断链；
+ *   - 因此把**个人身份信息**抹掉：微信号改随机值、昵称改占位、密码改随机哈希、
+ *     头像与邮箱清空、账号冻结、会话全部失效。行仍保留，仅用于业务口径统计与对账。
+ *
+ * 三道闸门：
+ *   1. 必须重新输入密码（防 CSRF / 会话劫持）；
+ *   2. 仍是后台角色的账号不允许自助注销，需先由管理员解除角色（避免把后台岗位注销掉）；
+ *   3. 有未开始的有效登记时不允许注销，避免占着名额又失联。
+ */
+export async function deleteAccount(
+  userId: string,
+  password: string,
+  res: Response,
+): Promise<void> {
+  const [rows] = await pool.execute<UserRow[]>(
+    'SELECT * FROM users WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+    [userId],
+  );
+  const user = rows[0];
+  if (!user) throw new AppError(BIZ_CODES.UNAUTHORIZED);
+  if (!(await verifyPassword(password, user.password_hash))) {
+    throw new AppError(BIZ_CODES.INVALID_CREDENTIALS, '密码不正确，无法注销');
+  }
+
+  const [roles] = await pool.execute<RowDataPacket[]>(
+    'SELECT role FROM admin_roles WHERE user_id = ?',
+    [userId],
+  );
+  if (roles.length) {
+    throw new AppError(BIZ_CODES.FORBIDDEN, '该账号仍具后台角色，请先联系管理员解除后再注销');
+  }
+
+  const nowSql = toSqlDateTime();
+  const [live] = await pool.execute<RowDataPacket[]>(
+    `SELECT COUNT(*) AS cnt
+       FROM registrations r
+       JOIN event_sessions s ON s.id = r.session_id
+      WHERE r.user_id = ?
+        AND r.status IN ('CONFIRMED', 'CHECKED_IN')
+        AND s.start_at > ?`,
+    [userId, nowSql],
+  );
+  const liveCount = Number(live[0]?.cnt ?? 0);
+  if (liveCount > 0) {
+    throw new AppError(
+      BIZ_CODES.ILLEGAL_TRANSITION,
+      `还有 ${liveCount} 条尚未开始的有效登记，请先在「我的登记」中取消后再注销`,
+    );
+  }
+
+  // 微信号唯一，注销后换成不可猜测的占位值，原微信号随之释放
+  const scrambled = `deleted_${userId}_${randomUUID().slice(0, 8)}`;
+  const unusableHash = await hashPassword(randomUUID());
+
+  await withTransaction(async (conn) => {
+    await conn.execute(
+      `UPDATE users
+          SET wechat_id = ?, nickname = '已注销用户', password_hash = ?,
+              email = NULL, avatar_url = NULL, status = 'FROZEN',
+              deleted_at = ?, session_version = session_version + 1, updated_at = ?
+        WHERE id = ?`,
+      [scrambled, unusableHash, nowSql, nowSql, userId],
+    );
+    await conn.execute(
+      "UPDATE refresh_sessions SET status = 'REVOKED' WHERE user_id = ? AND status = 'ACTIVE'",
+      [userId],
+    );
+  });
+
+  clearAuthCookies(res);
+  void recordAudit({
+    action: 'USER_ACCOUNT_DELETE',
+    targetType: 'user',
+    targetId: userId,
+    actorId: userId,
+    before: { wechatId: user.wechat_id, nickname: user.nickname },
+    after: { anonymized: true },
+  });
+}

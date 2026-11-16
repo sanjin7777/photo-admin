@@ -168,6 +168,12 @@ export const AUDIT_ACTIONS = [
   /** 优惠券：发放 / 作废 */
   'COUPON_ISSUE',
   'COUPON_REVOKE',
+  /** 用户本人注销账号（软删除 + 匿名化，履行业务记录留存义务） */
+  'USER_ACCOUNT_DELETE',
+  /** 时段级回避名单：新增 / 修改（含重复提交时复活旧规则） */
+  'SESSION_AVOID_RULE_UPSERT',
+  /** 时段级回避名单：解除 */
+  'SESSION_AVOID_RULE_REVOKE',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

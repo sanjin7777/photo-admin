@@ -2,21 +2,28 @@
 import { computed } from 'vue';
 import type { EventDto } from '@photo/shared';
 import { useSessionStore } from '../stores/session';
-import { priceFor, publicPriceOf, timeRange, yuan } from '../composables/usePricing';
+import { pointsFor, publicPointsOf, timeRange, ptsNum } from '../composables/usePricing';
 
 const props = defineProps<{ event: EventDto; closed?: boolean }>();
 const session = useSessionStore();
 
 const cover = computed(() => props.event.coverUrl ?? props.event.posterUrls?.[0] ?? '');
-const sessionCount = computed(() => props.event.sessions?.length ?? 0);
-const firstSession = computed(() => props.event.sessions?.[0] ?? null);
+/** 多个模特用「、」连接；空数组返回空串，模板据此整行不渲染 */
+const modelNames = computed(() => {
+  const list = props.event.models?.length ? props.event.models : (props.event.model ? [props.event.model] : []);
+  return list.map((m) => m.stageName).join('、');
+});
+// 代拍不是「时段」，统计与时间展示都只用常规时段
+const normalSessions = computed(() => (props.event.sessions ?? []).filter((s) => s.kind !== 'PROXY'));
+const sessionCount = computed(() => normalSessions.value.length);
+const firstSession = computed(() => normalSessions.value[0] ?? null);
 const timeLabel = computed(() => {
   const s = firstSession.value;
   return s ? timeRange(s.startAt, s.endAt) : timeRange(props.event.startAt, props.event.endAt);
 });
 const full = computed(() => props.event.capacityUsed >= props.event.capacity);
-const myPrice = computed(() => priceFor(props.event, session.level));
-const fullPrice = computed(() => publicPriceOf(props.event));
+const myPrice = computed(() => pointsFor(props.event, session.level));
+const fullPrice = computed(() => publicPointsOf(props.event));
 const badgeText = computed(() => (props.event.visibility === 'PUBLIC' ? '公开' : props.event.visibility));
 const badgeClass = computed(() =>
   props.event.visibility === 'SVIP' ? 'badge-svip'
@@ -51,7 +58,7 @@ const unit = computed(() => props.event.prices?.[0]?.unitLabel ?? '场');
         {{ sessionCount }} 个时段
       </span>
       <!-- 候补已下线（2026-11-13）：满员仅提示已满 -->
-      <span v-if="closed" class="chip absolute bottom-3 left-3 bg-slate-700/85 text-white">报名已截止</span>
+      <span v-if="closed" class="chip absolute bottom-3 left-3 bg-slate-700/85 text-white">登记已截止</span>
       <span v-else-if="full" class="chip absolute bottom-3 left-3 bg-amber-500/90 text-white">已满</span>
     </div>
 
@@ -68,22 +75,22 @@ const unit = computed(() => props.event.prices?.[0]?.unitLabel ?? '场');
           <span class="text-slate-500">场地</span>
           <span class="clamp-1 text-slate-700">{{ event.venue }}<span v-if="event.scene"> · {{ event.scene }}</span></span>
         </p>
-        <p v-if="event.model" class="flex items-center gap-1.5">
+        <p v-if="modelNames" class="flex items-center gap-1.5">
           <span class="text-slate-500">模特</span>
-          <span class="text-slate-700">{{ event.model.stageName }}<span v-if="event.ratioLabel"> · {{ event.ratioLabel }}</span></span>
+          <span class="clamp-1 text-slate-700">{{ modelNames }}<span v-if="event.ratioLabel"> · {{ event.ratioLabel }}</span></span>
         </p>
       </div>
 
       <div class="mt-3 flex items-end justify-between border-t border-slate-100 pt-3">
         <div>
           <p class="text-base font-semibold text-brand-soft">
-            {{ yuan(myPrice) }}<span class="ml-1 text-xs font-normal text-slate-500">/{{ unit }}</span>
+            {{ ptsNum(myPrice) }}<span class="ml-1 text-xs font-normal text-slate-500">/{{ unit }}</span>
           </p>
-          <p v-if="session.isMember && myPrice !== fullPrice" class="text-xs text-slate-500 line-through">{{ yuan(fullPrice) }}</p>
-          <p v-else-if="!session.isMember" class="text-xs text-slate-500">线下支付 · 会员可用积分抵扣</p>
+          <p v-if="session.isMember && myPrice !== fullPrice" class="text-xs text-slate-500 line-through">{{ ptsNum(fullPrice) }}</p>
+          <p v-else-if="!session.isMember" class="text-xs text-slate-500">登记后按会员等级结算</p>
         </div>
         <span v-if="closed" class="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-500">
-          报名已截止
+          登记已截止
         </span>
         <span v-else class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition group-hover:bg-brand">
           查看详情

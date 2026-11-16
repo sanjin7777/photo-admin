@@ -126,7 +126,7 @@ onMounted(async () => {
             class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-blue-400 hover:text-blue-600">审核退款</RouterLink>
         </div>
         <p class="mt-3 text-xs leading-relaxed text-slate-500">
-          积分为站内记账，1 积分抵 1 元；会员报名扣积分，普通用户走线下支付后在「报名管理」确认收款。
+          积分为站内权益记录，不可购买、不可兑现；会员登记按等级结算积分，普通用户登记后在「报名管理」确认到场。
         </p>
       </div>
     </div>

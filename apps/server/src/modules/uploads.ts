@@ -22,6 +22,7 @@ import { authenticate } from '../middleware/auth';
 import { requireCapabilities } from '../middleware/authorize';
 import { asyncHandler } from '../middleware/error';
 import { sendOk } from '../utils/response';
+import { classifyImage } from './nsfw';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'data', 'uploads');
@@ -90,6 +91,31 @@ export function mountUploads(app: Express): void {
           BIZ_CODES.INVALID_PARAM,
           '只支持 JPG / PNG / WebP；不支持 SVG（存在安全风险），请另存为 PNG 后再上传',
         );
+      }
+
+      /**
+       * 内容安全检测（NSFW）。
+       *
+       * 策略由环境变量控制：
+       *   · UPLOAD_NSFW_STRICT=1（生产建议）：模型不可用时**拒绝上传**，宁可不给传；
+       *   · 未设置（默认）：模型不可用时放行并记警告，避免模型没配好导致全站不能传图。
+       * 命中违规（Porn/Hentai 超过阈值）一律拒绝，与 strict 无关。
+       */
+      const verdict = await classifyImage(file.buffer);
+      if (verdict.available && verdict.blocked) {
+        throw new AppError(
+          BIZ_CODES.INVALID_PARAM,
+          `图片疑似含有违规内容（${verdict.topCategory}），已拒绝上传；如为误判请联系管理员`,
+        );
+      }
+      if (!verdict.available) {
+        const strict = process.env.UPLOAD_NSFW_STRICT === '1';
+        if (strict) {
+          throw new AppError(
+            BIZ_CODES.DEPENDENCY_UNAVAILABLE,
+            '图片内容检测服务当前不可用，已拒绝上传；请联系管理员检查模型配置',
+          );
+        }
       }
 
       const now = new Date();

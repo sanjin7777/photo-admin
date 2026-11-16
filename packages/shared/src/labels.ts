@@ -109,6 +109,9 @@ export const STATUS_LABELS: Readonly<Record<string, string>> = {
   INVITE_CODE_REVOKE: '作废邀请码',
   COUPON_ISSUE: '发放优惠券',
   COUPON_REVOKE: '作废优惠券',
+  USER_ACCOUNT_DELETE: '注销账号',
+  SESSION_AVOID_RULE_UPSERT: '设置回避名单',
+  SESSION_AVOID_RULE_REVOKE: '解除回避名单',
 
   /* 余额流水 biz_type（DDL 实际值，补齐以免界面漏英文） */
   REGISTRATION: '报名扣款',
