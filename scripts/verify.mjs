@@ -1954,4 +1954,17 @@ assert.ok(webDetailSrc.includes('wardrobeGroups'), '前台服装须按模特分�
 assert.ok(webDetailSrc.includes('服装照片 · ${m.stageName}'), '双人场服装标题须带模特名');
 assert.ok(webDetailSrc.includes('modelSlots'), '前台须使用按模特的照片与服装');
 
-console.log(`VERIFY_OK: 50 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/工程化与真分页；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
+/* ---------- 第 51 组：部署打包的归档根目录必须是 photo-club/ ---------- */
+// 踩过的坑：pack.py 曾把暂存目录名一起打进归档，
+// 于是包内路径变成 .pack-staging/photo-club/deploy/…，
+// 上线后解压到 /www/wwwroot 只多出一个隐藏目录，线上一个字节都没覆盖 → 「传了没生效」。
+const packPy = read('deploy/pack.py');
+assert.ok(packPy.includes("TOP = 'photo-club'"), '打包脚本须固定归档顶层为 photo-club');
+assert.ok(packPy.includes('arcname=TOP'), '打包须用固定 arcname，不能带暂存目录名');
+assert.ok(!packPy.includes('arcname=os.path.basename(SRC)'), '不得再用暂存目录名当归档根');
+assert.ok(packPy.includes('打包自检失败'), '打包后须自检归档路径');
+assert.ok(packPy.includes("m.name.startswith(TOP + '/')"), '自检须校验所有条目都在 photo-club/ 下');
+assert.ok(packPy.includes("elif info.name.endswith('.sh')"), '脚本须保留 .sh 可执行位');
+assert.ok(packPy.includes('info.mode = 0o755'), '目录与脚本须为 0755');
+
+console.log(`VERIFY_OK: 51 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
