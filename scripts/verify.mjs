@@ -834,7 +834,7 @@ assert.ok(settingsSrc.includes('writeSetting(BRAND_TITLE_KEY, brandTitle)'), '�
 const posterSrc = read('apps/admin/src/utils/poster.ts');
 assert.ok(posterSrc.includes('export const DEFAULT_BRAND_TITLE'), '海报须有默认标题常量');
 assert.ok(posterSrc.includes("CAT'S PAW · 猫爪摄影会"), '默认标题须保持现有文案');
-assert.ok(posterSrc.includes('drawBrandBlock(ctx, block, brandTitle)'), '海报须使用配置标题');
+assert.ok(posterSrc.includes('drawBrandBlock(ctx, block, brandTitle, pal)'), '海报须使用配置标题');
 assert.ok(posterSrc.includes('brandTitle: string | null = null'), '导出函数须接收标题参数');
 assert.ok(eventsView.includes('brandTitleDraft'), '后台须提供标题输入');
 assert.ok(eventsView.includes('DEFAULT_BRAND_TITLE'), '后台须提示默认标题');
@@ -906,8 +906,8 @@ assert.ok(designerSrc.includes('addBlock'), '设计器须支持添加区块');
 // 画布与热区必须同尺度：高度交给 aspect-ratio，宽度量准，否则框和内容会错位/拉伸
 assert.ok(designerSrc.includes('aspect-ratio: 1080 / 1620'), '画布容器须用 aspect-ratio 锁定比例，避免图片被拉伸');
 assert.ok(/max-width: calc\(\(100vh - \d+px\) \* 0\.6667\)/.test(designerSrc), '画布须按视口高度限制宽度，保证整张一屏可见');
-assert.ok(designerSrc.includes('watch(stageEl'), '须在画布元素出现后测量宽度（v-if 渲染时机）');
-assert.ok(designerSrc.includes('if (w > 0) stageW.value = w'), '量到 0 时不得覆盖已有缩放比');
+assert.ok(designerSrc.includes('watch(stageViewportEl'), '须在画布视口元素出现后测量宽度（v-if 渲染时机；量视口而非内层，避免缩放正反馈）');
+assert.ok(designerSrc.includes('if (w > 0) baseW.value = w'), '量到 0 时不得覆盖已有基准宽度（baseW 为视口宽，zoom 另算）');
 // 预览必须画在模板里那个固定 canvas 上，不能替换 DOM 节点（替换会丢 scoped 样式，导致内容不跟框动）
 assert.ok(designerSrc.includes('ctx.drawImage(rendered, 0, 0)'), '预览须把渲染结果画到固定 canvas，而不是更换节点');
 assert.ok(!designerSrc.includes('replaceChild'), '不得用 replaceChild 替换预览 canvas');
@@ -2082,4 +2082,284 @@ assert.ok(read('apps/admin/src/views/ForbiddenView.vue').includes('session.user.
 assert.ok(read('apps/admin/src/views/GovernanceView.vue').includes('l.targetNickname || l.targetWechatId'),
   '审计日志「对象」列有昵称时须显示昵称，缺才退化成 #id');
 
-console.log(`VERIFY_OK: 52 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页/昵称必显；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
+// ---- 53) E2E 全流程修复守门：幂等重放不双重包裹 + 冲突详情透传 ----
+// 背景：scripts/e2e-local.mjs 真实后端全流程测试发现两个真实 bug，此处固化防回归。
+const idemSrc53 = read('apps/server/src/db/idempotency.ts');
+assert.ok(idemSrc53.includes('replay: { data: unknown } | null'),
+  '幂等缓存回放的是业务数据而非完整响应包，避免路由层 sendOk 二次包裹');
+assert.ok(idemSrc53.includes('data: unknown'),
+  'completeIdempotency 须接收业务数据（不是 ApiResponse），否则重放双重包裹');
+assert.ok(idemSrc53.includes("typeof row.response_json === 'string'"),
+  'mysql2 JSON 列可能返回对象或字符串，回放须兼容两种形态');
+const regSrc53 = read('apps/server/src/modules/registrations.module.ts');
+assert.ok(regSrc53.includes('completeIdempotency(conn, scopedKey, batch)'),
+  '报名幂等须缓存 batch 业务数据，不能存 successResponse(batch) 整包');
+assert.ok(regSrc53.includes('return claim.replay.data as RegistrationBatchDto'),
+  '重放须取缓存业务数据返回，路由层再包响应壳');
+const errMidSrc53 = read('apps/server/src/middleware/error.ts');
+assert.ok(errMidSrc53.includes('appError.details'),
+  '错误出口须透传 AppError.details（如时段冲突 conflicts），不能恒为 null');
+const apiRespSrc53 = read('packages/shared/src/errors.ts');
+assert.ok(apiRespSrc53.includes('details?: unknown'),
+  'ApiResponse 须带可选 details 字段承载错误附加详情');
+const httpSrc53 = read('packages/shared/src/api/http.ts');
+assert.ok(httpSrc53.includes('body.details') && httpSrc53.includes('serverBody.details'),
+  'HTTP 客户端还原 AppError 时须并入服务端 details，前台才能拿到撞期明细');
+
+// ---- 54) 普通用户报名「待支付」流程守门（2026-11-17 需求：确认收款才算已确认） ----
+// 背景：非会员线上登记原来直接落 CONFIRMED，运营还没收到钱状态就是「已确认」。
+// 现在非会员先落 PENDING_PAYMENT（占名额），确认收款才转 CONFIRMED；待支付可直接取消（无退款单）。
+const enumsSrc54 = read('packages/shared/src/enums.ts');
+assert.ok(enumsSrc54.includes("'PENDING_PAYMENT'") && enumsSrc54.includes("PENDING_PAYMENT: ['CONFIRMED', 'CANCELLED']"),
+  '报名状态枚举须含 PENDING_PAYMENT，且只能转 CONFIRMED/CANCELLED（不允许直接签到）');
+assert.ok(read('packages/shared/src/labels.ts').includes("PENDING_PAYMENT: '待支付'"),
+  'PENDING_PAYMENT 须有中文文案「待支付」');
+const migSrc54 = read('apps/server/src/migrations/031_registration_pending_payment.sql');
+assert.ok(migSrc54.includes('PENDING_PAYMENT'),
+  '迁移 031 须把 registrations.status ENUM 扩出 PENDING_PAYMENT');
+const regSrc54 = read('apps/server/src/modules/registrations.module.ts');
+assert.ok(regSrc54.includes("const regStatus = member ? 'CONFIRMED' : 'PENDING_PAYMENT'"),
+  '非会员线上报名须先落 PENDING_PAYMENT，不能直接 CONFIRMED');
+assert.ok(regSrc54.includes("IN ('PENDING_PAYMENT','CONFIRMED','CHECKED_IN')"),
+  '冲突检测与名额上限须把待支付算作占位，防止「先登记不付钱」绕过限制');
+assert.ok(regSrc54.includes("const noMoney = reg.status === 'PENDING_PAYMENT' || reg.status === 'WAITLISTED'"),
+  '待支付取消走 CANCELLED（无资金可退），不进退款流程');
+assert.ok(regSrc54.includes("target === 'CANCELLED' && reg.status === 'PENDING_PAYMENT'") && regSrc54.includes('releaseCouponOf(conn, regId)'),
+  '待支付取消须归还名额并立即退券（钱没收到，无需等退款完成）');
+assert.ok(regSrc54.includes("const promoting = row.status === 'PENDING_PAYMENT'"),
+  '确认收款须把待支付转 CONFIRMED（历史 CONFIRMED+UNPAID 只改收款标记）');
+assert.ok(regSrc54.includes("status IN ('PENDING_PAYMENT','CONFIRMED')"),
+  '待收款统计须同时覆盖待支付新流程与历史 CONFIRMED+UNPAID');
+const evSrc54 = read('apps/server/src/modules/events.module.ts');
+assert.ok(evSrc54.includes("'PENDING_PAYMENT'") && evSrc54.includes("reg.status === 'PENDING_PAYMENT'"),
+  '主办方取消须处理待支付单：直接 CANCELLED、退名额退券，不建退款单');
+assert.ok(read('apps/server/src/modules/auth/service.ts').includes("'PENDING_PAYMENT'"),
+  '注销拦截须把待支付也算作有效占位登记');
+// 前台：非会员登记成功弹「待支付」引导 + 我的登记/票根/后台文案
+const webDetail54 = read('apps/web/src/views/EventDetailView.vue');
+assert.ok(webDetail54.includes('pendingGuide') && webDetail54.includes('登记成功，待支付'),
+  '非会员登记成功须弹待支付引导（含客服二维码），不能 toast 一句就跳走');
+assert.ok(webDetail54.includes('联系客服线下付款，确认收款后登记生效'),
+  '确认弹窗结算方式须按会员/非会员分支，非会员提示联系客服付款');
+const webMine54 = read('apps/web/src/views/MyRegistrationsView.vue');
+assert.ok(webMine54.includes("PENDING_PAYMENT: '待支付'") && webMine54.includes('联系客服付款'),
+  '我的登记须显示待支付徽章并提供联系客服付款入口');
+assert.ok(webMine54.includes("r.status !== 'PENDING_PAYMENT'"),
+  '待支付登记不展示票根入口（钱没付，票根无效）');
+const webTicket54 = read('apps/web/src/views/TicketView.vue');
+assert.ok(webTicket54.includes('pendingPayment') && webTicket54.includes("PENDING_PAYMENT: '待支付'"),
+  '票根页待支付须显示「尚未付款，票根暂不可用」而不是可用票根');
+const adminLabels54 = read('apps/admin/src/utils/labels.ts');
+assert.ok(adminLabels54.includes('PENDING_PAYMENT') && adminLabels54.includes('待支付'),
+  '后台状态徽章须含待支付');
+const adminRegs54 = read('apps/admin/src/views/RegistrationsView.vue');
+assert.ok(adminRegs54.includes("r.status === 'PENDING_PAYMENT'") && adminRegs54.includes('确认收款'),
+  '后台报名管理须支持待支付：可取消、确认收款按钮文案为「确认收款」');
+assert.ok(adminRegs54.includes('不产生退款单'),
+  '后台取消待支付单的确认文案须说明不产生退款单');
+// mock 与真实后端同口径
+const mockSrc54 = read('mock/index.ts');
+assert.ok(mockSrc54.includes("'PENDING_PAYMENT'") && mockSrc54.includes('confirm-payment'),
+  'mock 须同步待支付流程（报名落待支付 + 单条确认收款路由）');
+
+/* ---------- 第 56 组：已取消报名不得再收款 + 非会员取消提示联系客服 ---------- */
+// 已取消/已退款的报名 payment_status 可能仍是 UNPAID，只查收款标记会把「确认收款」按钮露给死单
+assert.ok(regSrc54.includes("row.status !== 'PENDING_PAYMENT' && row.status !== 'CONFIRMED'") && regSrc54.includes('不能再确认收款'),
+  '确认收款（单条+批量）须拒绝已取消/已退款的报名');
+assert.ok(adminRegs54.includes("r.paymentStatus === 'UNPAID' && (r.status === 'PENDING_PAYMENT' || r.status === 'CONFIRMED')"),
+  '后台确认收款按钮只对有效状态（待支付/已确认）展示');
+assert.ok(mockSrc54.includes('不能再确认收款'),
+  'mock 确认收款须同口径拒绝已取消/已退款报名');
+// 非会员线下付款：取消提示不能提「退回积分」，要引导联系客服
+assert.ok(webMine54.includes("const offline = r.paymentStatus !== 'NOT_REQUIRED'") && webMine54.includes('请联系客服处理退款'),
+  '非会员取消登记的确认框与成功提示须引导联系客服退款，不提退回积分');
+assert.ok(read('apps/web/src/views/TermsView.vue').includes('线下付款的登记，取消后请联系客服处理退款事宜'),
+  '用户协议须写明线下付款取消走客服退款，不走积分退回');
+
+/* ---------- 第 55 组：近期排序报名中优先 + 游客价格/登记信息隐藏 ---------- */
+const evSrc55 = read('apps/server/src/modules/events.module.ts');
+assert.ok(evSrc55.includes("CASE WHEN status = 'REGISTRATION_OPEN' AND registration_close_at > ? THEN 0 ELSE 1 END ASC"),
+  '近期列表须报名中优先排序，避免已截止场次把可报名场次挤到第二页');
+assert.ok(evSrc55.includes("scope === 'past' && !identity"),
+  '游客请求历史场次须返回空页（不暴露历史内容）');
+const mockSrc55 = read('mock/index.ts');
+assert.ok(mockSrc55.includes("scope === 'past' && !acc") && mockSrc55.includes('Number(isOpen(b)) - Number(isOpen(a))'),
+  'mock 须与后端同口径：游客 past 空态 + 报名中优先排序');
+const webCard55 = read('apps/web/src/components/EventCard.vue');
+assert.ok(webCard55.includes('session.user ? myPrice : fullPrice') && webCard55.includes('session.user && !session.isMember'),
+  '场次卡片各档价格游客可见，但结算提示只对登录用户展示');
+const webDetail55 = read('apps/web/src/views/EventDetailView.vue');
+assert.ok(webDetail55.includes('v-if="event.prices?.length"') && webDetail55.includes('session.user && p.level === myPriceLevel'),
+  '详情页价格表游客可见，但等级高亮只对登录用户展示');
+assert.ok(webDetail55.includes('须知：仅登录用户可见'),
+  '登记须知游客不可见');
+assert.ok(webDetail55.includes('游客整条不显示') && !webDetail55.includes('登录后登记'),
+  '游客吸底登记条整条不显示（不展示登记按钮、结算金额与登录引导）');
+
+/* ---------- 第 57 组：海报体现整场人数比 ---------- */
+// 人数比是整场固定一个值（events.ratio_label），不按时段区分；
+// 海报场次块标题行必须印出来，否则导出的海报看不到「4V1」这类关键信息。
+const poster57 = read('apps/admin/src/utils/poster.ts');
+assert.ok(poster57.includes('drawSessionsBlock(ctx, block, event.sessions ?? [], hasProxy, event.ratioLabel ?? null, pal)'),
+  '海报场次块须接收整场人数比与主题调色板');
+assert.ok(poster57.includes("const ratio = (eventRatio ?? '').trim()") && poster57.includes('ctx.fillText(`· ${ratio}`, headCursor, block.y + 22)'),
+  '海报场次安排标题行须印整场人数比（支持代拍之后，一次即可）');
+assert.ok(/if \(ratio\) \{\s*ctx\.fillStyle = pal\.accent;/.test(poster57),
+  '人数比须用主题主色，与橙色「支持代拍」区分颜色');
+assert.ok(poster57.includes("const PROXY_TAG = '#f5a524'") && poster57.includes('ctx.fillStyle = PROXY_TAG;'),
+  '「支持代拍」保持固定橙色，不跟随主题（两个标签必须分得开）');
+const dom57 = read('packages/shared/src/types/domain.ts');
+assert.ok(dom57.includes('ratioLabel: string | null'),
+  'EventDto 须保留整场人数比字段');
+const sch57 = read('packages/shared/src/schemas/event.ts');
+assert.ok(sch57.includes('ratioLabel: z.string().trim().max(16).nullable().optional()'),
+  '场次输入 schema 须保留整场人数比');
+// 用户明确：人数比固定一个，不按时段来——时段级字段不得残留
+assert.ok(!read('apps/server/src/domain/dto.ts').includes('session_ratio_label'),
+  '时段 DTO 不得带时段级人数比（人数比整场固定）');
+assert.ok(!read('apps/server/src/modules/events.module.ts').includes('ratio_label, sort_no'),
+  'event_sessions 写入不得带时段级人数比列');
+assert.ok(!read('apps/admin/src/views/EventsView.vue').includes('s.ratioLabel'),
+  '后台时段行不得有人数比输入（整场一个值）');
+assert.ok(!read('apps/web/src/views/EventDetailView.vue').includes('s.ratioLabel'),
+  '前台时段按钮不得按时间段显示人数比');
+
+/* ---------- 第 58 组：海报多配色主题 + 设计器工作台增强 ---------- */
+// 配色不是「换几个色块」：整张海报的次要文字、三档价格、图片蒙层与描边
+// 都由 bg/accent/text 三个色派生，浅色底必须自动转深色文字，否则白底白字。
+const sch58 = read('packages/shared/src/schemas/poster.ts');
+assert.ok(sch58.includes('export const posterThemeSchema') && sch58.includes('export type PosterThemeDto'),
+  '须有主题契约（bg/accent/text）');
+assert.ok(sch58.includes("theme: posterThemeSchema.nullable().default(null)"),
+  '版式须带可选主题字段，旧版式（无 theme）仍可通过校验');
+for (const key of ['midnight', 'ink', 'porcelain', 'forest', 'violet', 'ocean']) {
+  assert.ok(sch58.includes(`'${key}'`), `须内置配色方案 ${key}`);
+}
+assert.ok(sch58.includes('export function posterThemeOf') && sch58.includes('export const DEFAULT_POSTER_THEME'),
+  '须有取主题与默认主题的工具');
+assert.ok(sch58.includes('theme: PosterThemeDto | null = null'),
+  '换版式时须能保留当前配色（否则切版式会把配色冲掉）');
+
+const poster58 = read('apps/admin/src/utils/poster.ts');
+assert.ok(poster58.includes('interface PosterPalette') && poster58.includes('function paletteOf'),
+  '渲染器须有调色板派生层，而不是各处写死色值');
+assert.ok(poster58.includes('const pal = paletteOf(layout.theme)') && poster58.includes('ctx.fillStyle = pal.bg'),
+  'renderPoster 须按版式主题铺底色');
+assert.ok(poster58.includes('luminance(bg) > 0.45'),
+  '须按底色亮度自动切换深/浅配色（浅色主题不能白底白字）');
+assert.ok(poster58.includes('pal.price[item.level]'),
+  '三档价格配色须由主题派生');
+assert.ok(!poster58.includes('const PRICE_TONES'),
+  '不得残留写死的三档价格色表');
+// 二维码卡片必须始终白底深字，否则扫不出来
+assert.ok(/function drawQrBlock[\s\S]*?'rgba\(255,255,255,0\.97\)'/.test(poster58),
+  '二维码卡片保持白底（不跟随主题，否则扫码失败）');
+
+const designer58 = read('apps/admin/src/components/PosterDesigner.vue');
+for (const fn of [
+  'function applyTheme', 'function setThemeColor', 'function resetTheme',
+  'function undo', 'function redo', 'function pushHistory',
+  'function toggleSelect', 'function selectAll', 'function clearSelection',
+  'function alignSelection', 'function distributeSelection', 'function matchSize',
+  'function moveLayer', 'function nudgeSelection', 'function duplicateSelection',
+  'function copySelection', 'function pasteClipboard',
+  'function exportLayoutJson', 'function importLayoutJson', 'function zoomBy',
+]) {
+  assert.ok(designer58.includes(fn), `设计器须实现 ${fn}`);
+}
+assert.ok(designer58.includes('const HISTORY_LIMIT = 60') && designer58.includes('const snapshot = (): string => JSON.stringify(layout.value)'),
+  '撤销重做须存整份版式快照（任何改动都能回退）');
+assert.ok(designer58.includes('ev.shiftKey && mode === \'move\''),
+  'Shift+按下须是多选而不是把区块拖走');
+assert.ok(designer58.includes('const group = mode === \'move\' && multiSelected.value.size > 1'),
+  '多选拖动须整组平移');
+assert.ok(designer58.includes('multiSelected.value.has(b.id)') && designer58.includes('collectSnapTargets'),
+  '吸附须排除整个选区（组内不互相吸附，否则被拉扯变形）');
+assert.ok(designer58.includes("case 'z': ev.shiftKey ? redo() : undo()") && designer58.includes("case 'd': duplicateSelection()") && designer58.includes("case 's': void save()"),
+  '须有 Ctrl+Z / Ctrl+D / Ctrl+S 快捷键');
+assert.ok(designer58.includes('const fitW = computed(() => {') && designer58.includes('const stageW = computed(() => fitW.value * zoom.value)'),
+  '缩放须作用在内层宽度、基准宽取自外层视口与视口高（断开越量越大的正反馈，且 100% 时整张一屏可见）');
+assert.ok(designer58.includes('viewportH.value = h') && designer58.includes("window.addEventListener('resize', measure)"),
+  '基准高须随窗口尺寸更新，否则换屏幕后画布仍按旧高度算');
+assert.ok(/stageStyle = computed\(\(\) => \(\{[\s\S]*?maxWidth: `\$\{Math\.round\(stageW\.value\)\}px`/.test(designer58),
+  '行内 max-width 须覆盖 CSS 里那条高度基准，否则点 + 号只让 stage 变宽、画布不动');
+assert.ok(designer58.includes('.poster-viewport') && designer58.includes('max-height: calc(100vh - 260px)'),
+  '画布视口须限高并自绘滚动条，放大后才能滚而不是撑破弹窗');
+assert.ok(designer58.includes('showSafeArea') && designer58.includes('showGrid') && designer58.includes('showFrames'),
+  '须有安全边距 / 网格 / 区块框三个参考层开关');
+assert.ok(designer58.includes('lightCanvas') && designer58.includes("'is-light-canvas': lightCanvas"),
+  '浅色主题下画布辅助框须换深色描边');
+assert.ok(designer58.includes('.pd-swatch') && designer58.includes('.pd-colorrow'),
+  '须有色卡与三色取色器 UI');
+assert.ok(designer58.includes('::-webkit-scrollbar-thumb') && designer58.includes('scrollbar-color'),
+  '滚动条须按面板调色板自绘（含 Firefox 兜底），不留浏览器默认灰条');
+assert.ok(designer58.includes('跟随主题配色'),
+  '文字色留空提示须说明跟随主题，而不是写死「默认白色」');
+// 对齐 / 分布 / 同尺寸 / 图层微调 / 复制粘贴 都是「一次操作一条历史」，
+// 否则批量操作撤销时只回退最后一格，用户会以为撤销坏了。
+assert.ok(/function (alignSelection|distributeSelection|matchSize|moveLayer|nudgeSelection|duplicateSelection|pasteClipboard|removeSelection)\b[\s\S]{0,400}?pushHistory\(\)/.test(designer58),
+  '批量与图层操作须各自记一条历史快照');
+assert.ok(designer58.includes('function moveLayer') && designer58.includes('if (a.z === b.z)'),
+  '同 z 交换须让出一格，否则图层顺序看起来没变');
+assert.ok(designer58.includes('function pasteClipboard') && designer58.includes('clipboard'),
+  '复制粘贴须有独立剪贴板，且粘贴后偏移呈阶梯（连续粘贴不叠在同一处）');
+assert.ok(designer58.includes('function exportLayoutJson') && designer58.includes('function importLayoutJson'),
+  '须能导出 / 导入版式 JSON（模板复用与备份）');
+
+/* ---------- 第 59 组：场次安排高度自适应 + 溢出一键修复 ---------- */
+/**
+ * 用户实测：双人版场次安排只有 160px 高，三个时段里第三场被静默丢掉。
+ * 根因是把「能排几行」当成「能排几个时段」去 slice（双列布局下容量应是行×2）。
+ * 这一组盯住三件事：容量算法、放不下时的显式回报、以及三套预设都留足高度。
+ */
+const poster59 = read('apps/admin/src/utils/poster.ts');
+assert.ok(poster59.includes('interface SessionsLayout') && poster59.includes('neededH: number'),
+  '场次绘制须回报排版结果（缺几场 + 需要多高）');
+assert.ok(poster59.includes('const capacity = fitRows * cols'),
+  '双列布局的容量必须是「行数 × 列数」，不能拿行数当时段数（否则第三场被丢）');
+assert.ok(poster59.includes('const needRows = Math.max(1, Math.ceil(sorted.length / cols))'),
+  '行高须按实际需要的行数收缩，而不是先砍内容');
+assert.ok(poster59.includes('const rowH = Math.max(24, Math.min(40, Math.floor(avail / needRows) || 24))'),
+  '行高压缩须有下限（低于 24px 字会挤成一团）');
+assert.ok(poster59.includes('const hidden = Math.max(0, sorted.length - shown.length)'),
+  '须算出被省略的时段数');
+assert.ok(poster59.includes('（+${hidden} 场）') || poster59.includes('`（+${hidden} 场）`'),
+  '放不下时标题须显式标出还差几场，不能只写「共 N 场」让人以为全画了');
+assert.ok(poster59.includes('overflow.push({ id: block.id, hidden: layoutInfo.hidden, neededH: layoutInfo.neededH })'),
+  '渲染器须把溢出区块回报给设计器');
+assert.ok(poster59.includes('input.onDiagnostics?.({ skippedIds, hasSecondModel, overflow })'),
+  '诊断回调须带上 overflow（导出路传了也无副作用）');
+assert.ok(poster59.includes('const labelSize = Math.max(16, Math.min(25, Math.round(rowH * 0.62)))'),
+  '行内字号须跟行高走，否则压扁行距后上下行叠字');
+assert.ok(/let headSize = 22;[\s\S]*?while \(headSize > 16 && headWidth\(main, headSize\) > block\.w\)/.test(poster59),
+  '标题行三段（场次/代拍/人数比）超宽时须先缩字号，人数比不能被裁掉');
+
+const sch59 = read('packages/shared/src/schemas/poster.ts');
+const duo59 = sch59.slice(sch59.indexOf('const DUO'), sch59.indexOf('const COMPACT'));
+const compact59 = sch59.slice(sch59.indexOf('const COMPACT'), sch59.indexOf('const PRESETS'));
+assert.ok(duo59.includes("mk('sessions', 72, 1184, 540, 192)"),
+  '双人版场次区块须留 192px（三/四场都排得下），原 160 会丢第三场');
+assert.ok(compact59.includes("mk('sessions', 72, 1204, 660, 192)"),
+  '通栏版场次区块同样须留 192px');
+assert.ok(duo59.includes("mk('prices', 72, 1392, 540, 96)") && compact59.includes("mk('prices', 72, 1408, 660, 96)"),
+  '场次拉高后价格须顺移，不能与场次叠在一起');
+assert.ok(sch59.includes('高度不足时行高自动压缩'),
+  '区块说明须写清新的自适应行为（不再是「自动减少行数」）');
+
+const designer59 = read('apps/admin/src/components/PosterDesigner.vue');
+assert.ok(designer59.includes('const renderOverflow = ref<') && designer59.includes('renderOverflow.value = [...info.overflow]'),
+  '设计器须接收渲染器回报的溢出清单');
+assert.ok(designer59.includes('const overflowBlocks = computed(') && designer59.includes('byId.get(o.id)?.visible'),
+  '溢出提示须过滤已删除 / 已隐藏的区块，避免留下点不动的僵尸告警');
+assert.ok(designer59.includes('function fitOverflow') && designer59.includes('block.h = Math.min(3240, Math.max(block.h, target.neededH))'),
+  '须能一键把区块拉高到刚好排得下');
+assert.ok(/function fitOverflow[\s\S]{0,400}?pushHistory\(\)/.test(designer59),
+  '一键拉高须可撤销');
+assert.ok(designer59.includes('class="pd-overflow mb-2"') && designer59.includes('个时段未显示') && designer59.includes('拉高到 {{ o.neededH }}px'),
+  '画布上方须有可见的溢出告警与修复按钮');
+assert.ok(designer59.includes('.pd-overflow-row') && designer59.includes('.pd-overflow-fix'),
+  '溢出告警须有自己的视觉语言（琥珀警示条），不能是一行灰字');
+assert.ok(designer59.includes('sessions: { x: 72, y: 1200, w: 528, h: 192 }'),
+  '新增场次区块的默认高度也须是 192，否则一加出来就缺场');
+
+console.log(`VERIFY_OK: 59 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页/昵称必显/幂等重放与冲突详情透传/普通用户待支付流程/近期排序与游客信息隐藏/取消后收款拦截与线下退款提示/每场人数比/海报多配色与设计器工作台/场次高度自适应与溢出修复；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);

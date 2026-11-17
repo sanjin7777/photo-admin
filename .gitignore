@@ -31,6 +31,9 @@ apps/server/data/
 .walkthrough/
 output/
 
+# 本机开发启动脚本（含本机 runtime 绝对路径，因人而异，不入库）
+.dev-*.ps1
+
 # 编辑器与系统文件
 .idea/
 .vscode/
