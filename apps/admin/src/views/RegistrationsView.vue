@@ -166,16 +166,20 @@ function resetFilters(): void {
 }
 
 // 候补已下线：不再产生 WAITLISTED 行，但历史存量行仍允许取消（走取消流程收尾）
-const canCancel = (r: RegistrationDto) => r.status === 'CONFIRMED' || r.status === 'WAITLISTED';
+// 待支付（非会员线上登记未收款）也允许取消：无资金流动，直接释放名额
+const canCancel = (r: RegistrationDto) => r.status === 'CONFIRMED' || r.status === 'WAITLISTED' || r.status === 'PENDING_PAYMENT';
 const canCheckIn = (r: RegistrationDto) => r.status === 'CONFIRMED';
-const canConfirmPay = (r: RegistrationDto) => r.paymentStatus === 'UNPAID';
+// 已取消/已退款的报名不能再收款（服务端同样拦截）：名额已释放，标「已收款」会对不上账
+const canConfirmPay = (r: RegistrationDto) => r.paymentStatus === 'UNPAID' && (r.status === 'PENDING_PAYMENT' || r.status === 'CONFIRMED');
 
 async function act(r: RegistrationDto, action: 'CANCEL' | 'CHECK_IN'): Promise<void> {
   if (action === 'CANCEL') {
-    // 退款渠道由支付方式决定：积分支付（NOT_REQUIRED）审核通过回充积分；线下支付审核通过后线下退款，不回充
-    const refundHint = r.paymentStatus === 'NOT_REQUIRED'
-      ? '将生成退款单，审核通过后积分自动回充。'
-      : '将生成退款单，该报名为线下支付，审核通过后需线下退款，不回充积分。';
+    // 待支付还没收钱：直接取消，不产生退款单
+    const refundHint = r.status === 'PENDING_PAYMENT'
+      ? '该报名尚未收款，取消后名额直接释放，不产生退款单。'
+      : r.paymentStatus === 'NOT_REQUIRED'
+        ? '将生成退款单，审核通过后积分自动回充。'
+        : '将生成退款单，该报名为线下支付，审核通过后需线下退款，不回充积分。';
     try {
       await ui.confirm(`取消「${personLabel(r.userNickname, r.userWechatId, r.userId)}」在「${r.event?.title ?? '该场次'}」的报名？${refundHint}`);
     } catch { return; }
@@ -192,7 +196,8 @@ async function act(r: RegistrationDto, action: 'CANCEL' | 'CHECK_IN'): Promise<v
 async function confirmPay(r: RegistrationDto): Promise<void> {
   try {
     await api.admin.registrations.confirmPayment(r.id);
-    ui.notify('已确认到场', 'success');
+    // 待支付单确认收款后同时转为「已确认」；历史 CONFIRMED+UNPAID 只改收款标记
+    ui.notify(r.status === 'PENDING_PAYMENT' ? '已确认收款，报名转为已确认' : '已确认收款', 'success');
     await load();
   } catch {
     // 统一错误提示
@@ -681,7 +686,7 @@ async function exportCsv(): Promise<void> {
           {{ scoped ? `报名管理 · ${eventTitle || '当前场次'}` : '报名管理' }}
         </h1>
         <p class="mt-1 text-sm text-slate-500">
-          普通用户登记后点「确认到场」补记到场状态；会员登记直接结算积分，无需确认。
+          普通用户线上登记后为「待支付」，收到款后点「确认收款」才转为已确认；会员登记直接结算积分，无需确认。
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
@@ -700,7 +705,7 @@ async function exportCsv(): Promise<void> {
         <el-option v-for="(m, k) in PAYMENT_STATUS" :key="k" :label="m.label" :value="k" />
       </el-select>
       <el-button v-if="unpaidTotal" size="small" type="warning" plain @click="paymentFilter = 'UNPAID'">
-        待确认 {{ unpaidTotal }}
+        待收款 {{ unpaidTotal }}
       </el-button>
       <!-- 报名时间范围：按本地自然日筛（含首含尾），财务对账不必再导出 CSV -->
       <span class="flex items-center gap-1 text-xs text-slate-500">
@@ -723,7 +728,7 @@ async function exportCsv(): Promise<void> {
         批量签到{{ batchCheckInIds.length ? ` (${batchCheckInIds.length})` : '' }}
       </el-button>
       <el-button size="small" type="success" :loading="batchBusy" :disabled="!batchPayIds.length" @click="runBatch('CONFIRM_PAYMENT')">
-        批量确认到场{{ batchPayIds.length ? ` (${batchPayIds.length})` : '' }}
+        批量确认收款{{ batchPayIds.length ? ` (${batchPayIds.length})` : '' }}
       </el-button>
       <el-button size="small" text @click="selected = []">取消选择</el-button>
       <span class="ml-auto text-[11px] text-blue-700">只会处理当前页中状态允许的记录，其余的自动跳过</span>
@@ -817,7 +822,7 @@ async function exportCsv(): Promise<void> {
               </p>
             </td>
             <td class="px-3 py-2.5 text-right whitespace-nowrap">
-              <el-button v-if="canConfirmPay(r)" size="small" type="primary" @click="confirmPay(r)">确认到场</el-button>
+              <el-button v-if="canConfirmPay(r)" size="small" type="primary" @click="confirmPay(r)">确认收款</el-button>
               <el-button v-if="canCheckIn(r)" size="small" @click="act(r, 'CHECK_IN')">签到</el-button>
               <el-button v-if="canCancel(r)" size="small" text type="danger" @click="act(r, 'CANCEL')">取消</el-button>
               <span v-if="!canConfirmPay(r) && !canCheckIn(r) && !canCancel(r)"
@@ -859,7 +864,7 @@ async function exportCsv(): Promise<void> {
             </div>
           </div>
           <div class="mt-2 flex flex-wrap gap-2">
-            <el-button v-if="canConfirmPay(r)" size="small" type="primary" @click="confirmPay(r)">确认到场</el-button>
+            <el-button v-if="canConfirmPay(r)" size="small" type="primary" @click="confirmPay(r)">确认收款</el-button>
             <el-button v-if="canCheckIn(r)" size="small" @click="act(r, 'CHECK_IN')">签到</el-button>
             <el-button v-if="canCancel(r)" size="small" text type="danger" @click="act(r, 'CANCEL')">取消</el-button>
           </div>

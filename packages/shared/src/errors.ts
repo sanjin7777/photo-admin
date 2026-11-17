@@ -132,6 +132,12 @@ export interface ApiResponse<T = unknown> {
   message: string;
   data: T;
   traceId: string;
+  /**
+   * 错误附加详情（仅业务错误时出现，成功响应不带）。
+   * 例如时段冲突 SCHEDULE_CONFLICT 在这里回 { conflicts: [...] }，
+   * 前端据此渲染「与哪几场撞期」的二次确认列表。无详情时为 null/缺省。
+   */
+  details?: unknown;
 }
 
 export function httpStatusFor(code: number): number {

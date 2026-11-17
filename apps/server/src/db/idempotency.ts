@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
-import { AppError, BIZ_CODES, IDEMPOTENCY_DEDUP_WINDOW_HOURS, type ApiResponse } from '@photo/shared';
+import { AppError, BIZ_CODES, IDEMPOTENCY_DEDUP_WINDOW_HOURS } from '@photo/shared';
 import { addSeconds, toSqlDateTime } from '../utils/datetime';
 
 interface IdempotencyRow extends RowDataPacket {
@@ -31,8 +31,8 @@ export function scopedIdempotencyKey(userId: string, key: string): string {
 }
 
 export interface ClaimResult {
-  /** 非 null 表示命中已完成请求，直接回放缓存响应，不再执行业务 */
-  replay: ApiResponse<unknown> | null;
+  /** 非 null 表示命中已完成请求，直接回放缓存的业务数据，不再执行业务 */
+  replay: { data: unknown } | null;
 }
 
 function isDuplicateKey(error: unknown): boolean {
@@ -63,7 +63,10 @@ export async function claimIdempotency(
       throw new AppError(BIZ_CODES.IDEMPOTENCY_CONFLICT);
     }
     if (row.status === 'COMPLETED' && row.response_json) {
-      return { replay: JSON.parse(row.response_json) as ApiResponse<unknown> };
+      // response_json 存的是业务数据（如 RegistrationBatchDto），由调用方路由层再包响应壳。
+      // mysql2 可能把 JSON 列自动解析成对象，也可能返回字符串，两种都兼容。
+      const cached = typeof row.response_json === 'string' ? JSON.parse(row.response_json) : row.response_json;
+      return { replay: { data: cached } };
     }
     if (row.status === 'IN_PROGRESS') {
       throw new AppError(BIZ_CODES.CONCURRENCY_CONFLICT);
@@ -75,11 +78,11 @@ export async function claimIdempotency(
 export async function completeIdempotency(
   conn: PoolConnection,
   key: string,
-  response: ApiResponse<unknown>,
+  data: unknown,
 ): Promise<void> {
   await conn.execute(
     "UPDATE idempotency_keys SET status = 'COMPLETED', response_json = ? WHERE idem_key = ?",
-    [JSON.stringify(response), key],
+    [JSON.stringify(data), key],
   );
 }
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 本地 Mock 数据集。
  *
  * 只依赖 @photo/shared 的类型语义，不连数据库。
@@ -244,8 +244,9 @@ export const EVENT_DRAFT = {
 
 export const REGISTRATIONS = [
   {
-    id: 'r1', eventId: '1', userId: '7', sessionId: '21', status: 'CONFIRMED' as const,
-    paymentStatus: 'PAID' as const, source: 'ONLINE' as const,
+    // 普通用户线上登记的新流程演示：待支付（占名额、未收款），运营确认收款后转已确认
+    id: 'r1', eventId: '1', userId: '7', sessionId: '21', status: 'PENDING_PAYMENT' as const,
+    paymentStatus: 'UNPAID' as const, source: 'ONLINE' as const,
     feeCent: 18900, originalFeeCent: 18900, discountCent: 0, couponId: null, couponTitle: null,
     refundPolicySnapshot: { freeCancelBeforeHours: 24, feeRatio: 0.3 },
     balanceTxnId: null, cancelReason: null,

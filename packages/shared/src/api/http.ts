@@ -160,7 +160,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
         throw new AppError(BIZ_CODES.INTERNAL_ERROR, '响应格式异常');
       }
       if (body.code !== BIZ_CODES.OK) {
-        throw new AppError(body.code, body.message, { traceId: body.traceId });
+        throw new AppError(body.code, body.message, { traceId: body.traceId, ...(body.details as object ?? {}) });
       }
       return body.data;
     } catch (error: unknown) {
@@ -178,7 +178,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       if (error instanceof AxiosError) {
         const serverBody = error.response?.data as ApiResponse<unknown> | undefined;
         if (serverBody && typeof serverBody.code === 'number' && serverBody.code !== BIZ_CODES.OK) {
-          throw new AppError(serverBody.code, serverBody.message, { traceId: serverBody.traceId });
+          throw new AppError(serverBody.code, serverBody.message, { traceId: serverBody.traceId, ...(serverBody.details as object ?? {}) });
         }
         if (error.response?.status === 401 && !cfg._retry && !isAuthEndpoint(cfg.url)) {
           await refreshAccessToken();

@@ -289,7 +289,7 @@ async function replaceRelations(
  * 因此继续计入，避免把容量压到历史报名人数以下。
  */
 const LIVE_REG_STATUSES =
-  "('WAITLISTED','OFFERED','CONFIRMED','REFUND_PENDING','CHECKED_IN','COMPLETED')";
+  "('WAITLISTED','OFFERED','PENDING_PAYMENT','CONFIRMED','REFUND_PENDING','CHECKED_IN','COMPLETED')";
 
 /**
  * 编辑场次时按时段 id 做增改删，绝不整表重建：
@@ -853,14 +853,22 @@ export function mountEvents(app: Express): void {
     // 正在进行中的活动算历史，避免出现「即将开始」却已开演的错位。
     const now = toSqlDateTime();
     const timeClause = scope === 'past' ? 'start_at <= ?' : 'start_at > ?';
-    // 历史按「最近结束优先」，近期按「最早开始优先」
-    const orderBy = scope === 'past' ? 'start_at DESC' : 'start_at ASC';
+    /**
+     * 近期排序：报名中优先，其次才是「报名已截止但尚未开始」。
+     * 原来只按 start_at ASC，报名窗口已关的场次会因开始时间更早而排在
+     * 前面，把还能报名的场次挤到第二页——首屏全是「登记已截止」，
+     * 用户以为没场次可报。同组内仍按最早开始优先。
+     */
+    const orderBy = scope === 'past'
+      ? 'start_at DESC'
+      : `CASE WHEN status = 'REGISTRATION_OPEN' AND registration_close_at > ? THEN 0 ELSE 1 END ASC, start_at ASC`;
     const where = `deleted_at IS NULL AND status <> 'DRAFT' AND ${clause} AND ${timeClause}`;
     const whereParams = [...params, now];
+    const orderParams = scope === 'past' ? [] : [now];
 
     const [rows] = await pool.execute<EventRow[]>(
       `SELECT * FROM events WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
-      [...whereParams, pageSize, offset],
+      [...whereParams, ...orderParams, pageSize, offset],
     );
     const [counts] = await pool.execute<RowDataPacket[]>(
       `SELECT COUNT(*) AS total FROM events WHERE ${where}`, whereParams,
@@ -1119,12 +1127,27 @@ export function mountEvents(app: Express): void {
       );
       const [regs] = await conn.execute<RowDataPacket[]>(
         `SELECT * FROM registrations
-          WHERE event_id = ? AND status IN ('CONFIRMED','CHECKED_IN','REFUND_PENDING')
+          WHERE event_id = ? AND status IN ('PENDING_PAYMENT','CONFIRMED','CHECKED_IN','REFUND_PENDING')
           FOR UPDATE`,
         [current.id],
       );
       for (const reg of regs) {
         const regId = String(reg.id);
+        // 待支付：钱还没收，没有资金可退——直接取消、退名额、退券，不产生退款单
+        if (reg.status === 'PENDING_PAYMENT') {
+          if (reg.session_id) {
+            await conn.execute(
+              'UPDATE event_sessions SET capacity_used = capacity_used - 1 WHERE id = ? AND capacity_used > 0',
+              [reg.session_id],
+            );
+          }
+          await conn.execute(
+            "UPDATE registrations SET status = 'CANCELLED', cancel_reason = COALESCE(cancel_reason, '场次取消') WHERE id = ?",
+            [regId],
+          );
+          await releaseCouponOf(conn, regId);
+          continue;
+        }
         const fee = Number(reg.fee_cent ?? 0);
         // 已有待审退款单则复用（避免同一笔退款留两条记录），否则补一条已完成的退款单
         const [active] = await conn.execute<RowDataPacket[]>(

@@ -27,6 +27,7 @@ export const REGISTRATION_STATUS: Record<string, Meta> = {
   WAITLISTED: { label: '候补中', cls: 'bg-slate-100 text-slate-600' },
   OFFERED: { label: '待确认递补', cls: 'bg-amber-50 text-amber-700' },
   EXPIRED: { label: '已失效', cls: 'bg-slate-100 text-slate-400' },
+  PENDING_PAYMENT: { label: '待支付', cls: 'bg-amber-50 text-amber-700' },
   CONFIRMED: { label: '已确认', cls: 'bg-emerald-50 text-emerald-700' },
   REFUND_PENDING: { label: '退款中', cls: 'bg-amber-50 text-amber-700' },
   REFUNDED: { label: '已退款', cls: 'bg-slate-100 text-slate-500' },

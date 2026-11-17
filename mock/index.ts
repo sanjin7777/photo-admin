@@ -14,7 +14,7 @@ import { BIZ_CODES } from '../packages/shared/src/errors';
 import { couponDiscountOf } from '../packages/shared/src/schemas/coupon';
 import { LEGAL_VERSION } from '../packages/shared/src/legal';
 import {
-  ACCOUNTS, ALL_EVENTS, AUDIT_LOGS, COUPONS, EVENT_DRAFT, EVENT_PUBLIC, EVENT_SVIP, IMPORT_PREVIEW_ROWS, MODELS,
+  ACCOUNTS, ALL_EVENTS, AUDIT_LOGS, COUPONS, EVENT_PUBLIC, EVENT_SVIP, IMPORT_PREVIEW_ROWS, MODELS,
   PERMISSION_LOGS, POSTER_SETTINGS, REFUNDS, REGISTRATIONS, SCENES, VOTE_DRAFT, VOTE_OPEN, VOTE_PUBLISHED, VOTE_VOTERS, mockUserOf,
   type MockAccount,
 } from './data';
@@ -136,12 +136,13 @@ function capsOf(acc: MockAccount): string[] {
   return [...capabilitiesFor({ authenticated: true, level: acc.level, backendRoles: acc.roles })];
 }
 
-/** 可见场次：按等级过滤，与后端 satisfiesVisibility 同序；草稿由调用方另行排除 */
+/** 可见场次：按等级过滤，与后端 satisfiesVisibility 同序；草稿由调用方另行排除。
+ *  用 ALL_EVENTS（含历史演示场次），前台再按 scope/时间窗切分，与真实后端一致。 */
 function visibleEvents(acc: MockAccount | null) {
   const rank = { NONE: 0, VIP: 1, SVIP: 2 } as const;
   const vis = { PUBLIC: 0, VIP: 1, SVIP: 2 } as const;
   const lv = acc?.level ?? 'NONE';
-  return [EVENT_DRAFT, EVENT_PUBLIC, EVENT_SVIP].filter((e) => rank[lv] >= vis[e.visibility]);
+  return ALL_EVENTS.filter((e) => rank[lv] >= vis[e.visibility as keyof typeof vis]);
 }
 
 const LEVEL_RANK = { NONE: 0, VIP: 1, SVIP: 2 } as const;
@@ -367,8 +368,25 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
 
   /* ---------------- 场次 ---------------- */
   if (path === '/events') {
-    // 草稿只有后台可见；模特身体数据按会员 gating（点3）
-    json(res, paginate(visibleEvents(acc).filter((e) => e.status !== 'DRAFT').map((e) => publicEventOf(e as typeof EVENT_PUBLIC, acc))));
+    /**
+     * 与真实后端同口径：scope=upcoming（尚未开始，默认）/ past（已开始，仅登录）。
+     * 近期排序「报名中优先」：报名窗口已关的场次不再因开始时间早而把可报名的
+     * 场次挤到第二页。历史按最近结束优先。分页用 pageArgs 真切片。
+     */
+    const scope = url.searchParams.get('scope') === 'past' ? 'past' : 'upcoming';
+    if (scope === 'past' && !acc) { json(res, pageArgs(url, [])); return; }
+    const nowMs = Date.now();
+    const list = visibleEvents(acc)
+      .filter((e) => e.status !== 'DRAFT')
+      .filter((e) => (scope === 'past'
+        ? Date.parse(e.startAt) <= nowMs
+        : Date.parse(e.startAt) > nowMs));
+    const isOpen = (e: typeof EVENT_PUBLIC) =>
+      e.status === 'REGISTRATION_OPEN' && Date.parse(e.registrationCloseAt) > nowMs;
+    list.sort((a, b) => (scope === 'past'
+      ? Date.parse(b.startAt) - Date.parse(a.startAt)
+      : Number(isOpen(b)) - Number(isOpen(a)) || Date.parse(a.startAt) - Date.parse(b.startAt)));
+    json(res, pageArgs(url, list.map((e) => publicEventOf(e as typeof EVENT_PUBLIC, acc))));
     return;
   }
   const eventDetail = /^\/events\/([^/]+)$/.exec(path);
@@ -465,9 +483,10 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const isProxyTarget = (target as { kind?: string } | undefined)?.kind === 'PROXY';
 
     if (target && !ignore && !isProxyTarget) {
-      // 与已占用名额的报名（已确认/已签到，含历史候补）做时段重叠判断
+      // 与仍占位的报名（待支付/已确认/已签到）做时段重叠判断；已取消/已退款的不算
       const conflicts = REGISTRATIONS
         .filter((r) => r.userId === acc!.id)
+        .filter((r) => r.status === 'PENDING_PAYMENT' || r.status === 'CONFIRMED' || r.status === 'CHECKED_IN')
         .filter((r) => new Date(r.session.startAt) < new Date(target.endAt)
           && new Date(r.session.endAt) > new Date(target.startAt))
         .map((r) => ({
@@ -517,12 +536,16 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const now = nowIso();
     const batch = `mock-r-${Date.now()}`;
     const base = REGISTRATIONS[0];
+    // 与真实服务端一致：会员扣积分即确认；非会员先「待支付」，确认收款后才转已确认
+    const isMemberAcc = acc!.level === 'VIP' || acc!.level === 'SVIP';
     const created = Array.from({ length: seats }, (_, i) => {
       const c = picked[i];
       const discount = c ? couponDiscountOf(c, priceCent) : 0;
       return {
         ...base, id: `${batch}-${i}`,
         source: 'ONLINE' as const,
+        status: (isMemberAcc ? 'CONFIRMED' : 'PENDING_PAYMENT') as 'CONFIRMED' | 'PENDING_PAYMENT',
+        paymentStatus: (isMemberAcc ? 'NOT_REQUIRED' : 'UNPAID') as 'NOT_REQUIRED' | 'UNPAID',
         userId: acc!.id, userWechatId: acc!.wechatId, userNickname: acc!.nickname,
         eventId: ev.id, event: ev, eventTitle: ev.title,
         sessionId: target?.id ?? base.sessionId,
@@ -543,10 +566,31 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       c.usedAt = now;
       c.updatedAt = now;
     });
+    REGISTRATIONS.push(...created);
     json(res, { registrations: created, seats }, 201);
     return;
   }
-  if (/^\/registrations\/[^/]+\/cancel$/.test(path)) { json(res, { id: 'r1', status: 'CANCELLED' }); return; }
+  if (/^\/registrations\/[^/]+\/cancel$/.test(path)) {
+    if (needAuth()) return;
+    const regId = path.split('/')[2];
+    const r = REGISTRATIONS.find((x) => x.id === regId && x.userId === acc!.id);
+    if (!r) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND); return; }
+    // 待支付：无资金流动，直接取消并退券；已确认/会员单走退款待审（与真实服务端一致）
+    if (r.status === 'PENDING_PAYMENT') {
+      r.status = 'CANCELLED';
+      r.updatedAt = nowIso();
+      const c = MOCK_COUPONS.find((x) => x.usedRegistrationId === r.id && x.status === 'USED');
+      if (c) { c.status = 'UNUSED'; c.usedRegistrationId = null; c.usedAt = null; }
+      json(res, { id: r.id, status: 'CANCELLED' });
+      return;
+    }
+    if (r.status === 'CONFIRMED') {
+      r.status = 'REFUND_PENDING';
+      r.updatedAt = nowIso();
+    }
+    json(res, { id: r.id, status: r.status });
+    return;
+  }
 
   /* ---------------- 余额与会员 ---------------- */
   if (path === '/balance') {
@@ -900,14 +944,32 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
         if (r.status !== 'CONFIRMED') { skipped.push({ id, reason: '当前状态不能签到' }); continue; }
         r.status = 'CHECKED_IN';
       } else if (action === 'CONFIRM_PAYMENT') {
+        if (r.status !== 'PENDING_PAYMENT' && r.status !== 'CONFIRMED') { skipped.push({ id, reason: '该报名已取消或已退款，不能再确认收款' }); continue; }
         if (r.paymentStatus !== 'UNPAID') { skipped.push({ id, reason: '该报名当前无需确认收款' }); continue; }
         r.paymentStatus = 'PAID';
+        // 与真实服务端一致：待支付单收到钱才转已确认
+        if (r.status === 'PENDING_PAYMENT') r.status = 'CONFIRMED';
       } else {
         skipped.push({ id, reason: '不支持的操作' }); continue;
       }
       succeeded.push(id);
     }
     json(res, { action, succeeded, skipped });
+    return;
+  }
+  // 单条确认收款（与真实服务端 POST /admin/registrations/:id/confirm-payment 对齐）
+  if (/^\/admin\/registrations\/[^/]+\/confirm-payment$/.test(path) && method === 'POST') {
+    if (needCap('admin:registration:write')) return;
+    const regId = path.split('/')[3];
+    const r = REGISTRATIONS.find((x) => x.id === regId);
+    if (!r) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND); return; }
+    if (r.status !== 'PENDING_PAYMENT' && r.status !== 'CONFIRMED') { fail(res, BIZ_CODES.ILLEGAL_TRANSITION, '该报名已取消或已退款，不能再确认收款'); return; }
+    if (r.paymentStatus !== 'UNPAID') { fail(res, BIZ_CODES.ILLEGAL_TRANSITION, '该报名当前无需确认收款'); return; }
+    const promoting = r.status === 'PENDING_PAYMENT';
+    r.paymentStatus = 'PAID';
+    if (promoting) r.status = 'CONFIRMED';
+    r.updatedAt = nowIso();
+    json(res, { id: r.id, status: r.status, paymentStatus: 'PAID' });
     return;
   }
   if (path === '/admin/registrations') {
@@ -942,8 +1004,8 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       total: rows.length,
       page,
       pageSize,
-      // 全局待收款角标，不受当前页与筛选影响
-      unpaidTotal: REGISTRATIONS.filter((r) => r.paymentStatus === 'UNPAID' && r.status === 'CONFIRMED').length,
+      // 全局待收款角标，不受当前页与筛选影响（待支付 + 历史 CONFIRMED+UNPAID 都算）
+      unpaidTotal: REGISTRATIONS.filter((r) => r.paymentStatus === 'UNPAID' && (r.status === 'PENDING_PAYMENT' || r.status === 'CONFIRMED')).length,
     });
     return;
   }

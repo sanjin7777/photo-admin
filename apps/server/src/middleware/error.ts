@@ -53,6 +53,10 @@ export function errorMiddleware(
     message: appError.message,
     data: null,
     traceId: getTraceId(),
+    // 把业务详情透传给前端（如时段冲突的 conflicts 列表）。
+    // 此前这里恒为 null，AppError.details 被丢弃，前端拿不到撞期明细，
+    // 「仍要登记」二次确认弹窗永远是空的。无详情时省略该字段。
+    ...(appError.details !== undefined ? { details: appError.details } : {}),
   };
   res.status(appError.httpStatus).json(body);
 }

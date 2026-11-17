@@ -2,8 +2,9 @@
  * 报名 / 取消 / 收款确认（核心事务）。
  *
  * 容量以「时段」为准；金额按会员等级取价。
- * 会员（VIP/SVIP）：报名冻结余额，payment_status=NOT_REQUIRED；
- * 非会员：不扣余额，payment_status=UNPAID，由运营在后台确认收款。
+ * 会员（VIP/SVIP）：报名冻结余额，payment_status=NOT_REQUIRED，状态直接 CONFIRMED；
+ * 非会员：不扣余额，payment_status=UNPAID，状态先落 PENDING_PAYMENT（待支付），
+ *         由运营在后台确认收款后才转 CONFIRMED；收款前可直接取消（无资金可退）。
  * 固定加锁顺序：events → event_sessions → registrations → balance_accounts。
  *
  * 候补（WAITLISTED/OFFERED）已于 2026-11 整体下线：满员即拒绝，不做排队与递补。
@@ -30,7 +31,6 @@ import {
   registrationCancelSchema,
   registrationCreateSchema,
   satisfiesVisibility,
-  successResponse,
   type AdminRegistrationActionPayload,
   type AdminRegistrationBatchPayload,
   type AdminRegistrationBatchResult,
@@ -51,7 +51,7 @@ import { effectiveLevel } from '../db/identity';
 import { claimIdempotency, completeIdempotency, requestHash, scopedIdempotencyKey } from '../db/idempotency';
 import { authenticate } from '../middleware/auth';
 import { requireAnyCapability, requireCapabilities } from '../middleware/authorize';
-import { getIdentity, getTraceId } from '../middleware/context';
+import { getIdentity } from '../middleware/context';
 import { asyncHandler } from '../middleware/error';
 import { validateBody, validateQuery } from '../middleware/validate';
 import { auditOf } from '../middleware/audit';
@@ -60,6 +60,7 @@ import {
   type EventRow, type RegistrationRow,
 } from '../domain/dto';
 import { applyLedgerEntry } from '../domain/ledger';
+import { releaseCouponOf } from './coupons.module';
 import { canCancel, decideRegistration, pickPrice, refundAmountOf } from '../domain/policy';
 import { fromSqlDateTime, localDayRangeUtc, toSqlDateTime } from '../utils/datetime';
 import { sendOk } from '../utils/response';
@@ -90,7 +91,11 @@ async function createRegistration(
   });
   return withTransaction(async (conn) => {
     const claim = await claimIdempotency(conn, { key: scopedKey, scope, hash });
-    if (claim.replay) return claim.replay.data as RegistrationBatchDto;
+    if (claim.replay) {
+      // 缓存里存的是业务数据（RegistrationBatchDto），不是完整响应包；
+      // 路由层会再 sendOk 包一层，这里直接返回即可，避免双重包裹。
+      return claim.replay.data as RegistrationBatchDto;
+    }
 
     const [eventRows] = await conn.execute<EventRow[]>('SELECT * FROM events WHERE id = ? FOR UPDATE', [eventId]);
     const event = eventRows[0];
@@ -106,7 +111,7 @@ async function createRegistration(
     /**
      * 同一时段的其它报名冲突检测。
      * 用户第一次提交时把冲突项回给前端做二次确认；确认后带 ignoreConflict=true 再来一次。
-     * 只算仍然占位的状态：已确认/已签到；已取消、已退款、退款待审的不算。
+     * 只算仍然占位的状态：待支付/已确认/已签到；已取消、已退款、退款待审的不算。
      *
      * 代拍不参与时间冲突：代拍独立于常规时段，本来就是「不用亲自到场」，
      * 因此既不该被常规报名挡住，也不该挡住别人的常规报名。
@@ -120,7 +125,7 @@ async function createRegistration(
            JOIN event_sessions s ON s.id = r.session_id
            JOIN events e ON e.id = r.event_id
           WHERE r.user_id = ?
-            AND r.status IN ('CONFIRMED','CHECKED_IN')
+            AND r.status IN ('PENDING_PAYMENT','CONFIRMED','CHECKED_IN')
             AND r.session_id <> ?
             AND s.kind <> 'PROXY'
             AND s.start_at < ? AND s.end_at > ?`,
@@ -216,10 +221,11 @@ async function createRegistration(
     if (!decision.ok) throw new AppError(decision.reasonCode ?? BIZ_CODES.EVENT_NOT_OPEN);
 
     // 多名额：同一用户可对同一场次持有多条记录，仅限制累计活跃名额，防止刷占名额
+    // 待支付同样占位：不能靠「先登记不付钱」绕过上限
     const [activeRows] = await conn.execute<RowDataPacket[]>(
       `SELECT COUNT(*) AS cnt FROM registrations
         WHERE event_id = ? AND user_id = ?
-          AND status IN ('CONFIRMED','CHECKED_IN')`,
+          AND status IN ('PENDING_PAYMENT','CONFIRMED','CHECKED_IN')`,
       [eventId, userId],
     );
     if (Number(activeRows[0]?.cnt ?? 0) + seats > MAX_SEATS_PER_EVENT) {
@@ -264,6 +270,8 @@ async function createRegistration(
 
     const now = toSqlDateTime();
     const paymentStatus = member ? 'NOT_REQUIRED' : 'UNPAID';
+    // 会员扣积分即确认；非会员先「待支付」占住名额，运营确认收款后才转 CONFIRMED
+    const regStatus = member ? 'CONFIRMED' : 'PENDING_PAYMENT';
     const created: RegistrationDto[] = [];
     for (let i = 0; i < seats; i += 1) {
       const discountCent = discounts[i] ?? 0;
@@ -274,8 +282,8 @@ async function createRegistration(
           (event_id, session_id, user_id, status, payment_status,
            fee_cent, original_fee_cent, discount_cent, coupon_id,
            refund_policy_snapshot, idempotency_key, created_at, updated_at)
-         VALUES (?, ?, ?, 'CONFIRMED', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [eventId, sessionId, userId, paymentStatus,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [eventId, sessionId, userId, regStatus, paymentStatus,
           feeCent, priceCent, discountCent, couponId,
           JSON.stringify(event.refund_policy), scopedKey, now, now],
       );
@@ -310,7 +318,9 @@ async function createRegistration(
       created.push(registrationDtoOf(rows[0]!, eventDtoOf(event), sessionDtoOf(session)));
     }
     const batch: RegistrationBatchDto = { registrations: created, seats };
-    await completeIdempotency(conn, scopedKey, successResponse(batch, getTraceId()));
+    // 缓存「业务数据」而非完整响应包：重放时本函数返回 batch，路由层再 sendOk 包一层。
+    // 若这里存 successResponse(batch)，重放取 .data 会得到整个响应包，造成双重包裹。
+    await completeIdempotency(conn, scopedKey, batch);
     return batch;
   });
 }
@@ -335,10 +345,23 @@ async function cancelRegistration(userId: string, regId: string, reason?: string
     const settled: RegistrationStatus[] = ['REFUND_PENDING', 'REFUNDED', 'CANCELLED', 'EXPIRED', 'COMPLETED'];
     if (settled.includes(reg.status as RegistrationStatus)) return;
 
-    // 取消一律走退款流程（会员回充余额、非会员线下退）。历史上 WAITLISTED 可直接取消，
-    // 候补下线后不再产生该状态，但存量行仍需能取消，故保留这个分支。
-    const target: RegistrationStatus = reg.status === 'WAITLISTED' ? 'CANCELLED' : 'REFUND_PENDING';
+    // 已收款/已入积分的取消走退款流程（会员回充余额、非会员线下退）。
+    // 待支付与历史候补没有资金流动：直接 CANCELLED，退名额、退券，不产生退款单。
+    const noMoney = reg.status === 'PENDING_PAYMENT' || reg.status === 'WAITLISTED';
+    const target: RegistrationStatus = noMoney ? 'CANCELLED' : 'REFUND_PENDING';
     assertTransition(REGISTRATION_TRANSITIONS, reg.status as RegistrationStatus, target);
+
+    if (target === 'CANCELLED' && reg.status === 'PENDING_PAYMENT') {
+      if (reg.session_id) {
+        // 待支付同样占过名额，取消必须归还（代拍不占名额，不减）
+        await conn.execute(
+          "UPDATE event_sessions SET capacity_used = capacity_used - 1 WHERE id = ? AND kind <> 'PROXY' AND capacity_used > 0",
+          [reg.session_id],
+        );
+      }
+      // 钱还没收，不存在「退款待审期间券被挪用」的风险，直接退券
+      await releaseCouponOf(conn, regId);
+    }
 
     if (target === 'REFUND_PENDING') {
       const snapshot = reg.refund_policy_snapshot ?? { freeCancelBeforeHours: 24, feeRatio: 0 };
@@ -515,11 +538,11 @@ async function createManualRegistration(
       );
     }
 
-    // 多名额上限与自助登记同口径，避免后台绕过「同一场次最多 N 个名额」的限制
+    // 多名额上限与自助登记同口径（待支付同样占位），避免后台绕过「同一场次最多 N 个名额」的限制
     const [activeRows] = await conn.execute<RowDataPacket[]>(
       `SELECT COUNT(*) AS cnt FROM registrations
         WHERE event_id = ? AND user_id = ?
-          AND status IN ('CONFIRMED','CHECKED_IN')`,
+          AND status IN ('PENDING_PAYMENT','CONFIRMED','CHECKED_IN')`,
       [payload.eventId, userId],
     );
     if (Number(activeRows[0]?.cnt ?? 0) + seats > MAX_SEATS_PER_EVENT) {
@@ -731,10 +754,11 @@ export function mountRegistrations(app: Express): void {
       `SELECT COUNT(*) AS total ${joinSql} ${where}`,
       condParams,
     );
-    // 待收款角标是全局口径，不能被当前页/当前筛选影响，单独聚合一次
+    // 待收款角标是全局口径，不能被当前页/当前筛选影响，单独聚合一次。
+    // 待支付（新流程）与历史 CONFIRMED+UNPAID（旧数据/手动录入未收款）都算待收款。
     const [payCounts] = await pool.execute<RowDataPacket[]>(
       `SELECT COUNT(*) AS unpaid FROM registrations
-        WHERE payment_status = 'UNPAID' AND status = 'CONFIRMED'`,
+        WHERE payment_status = 'UNPAID' AND status IN ('PENDING_PAYMENT','CONFIRMED')`,
     );
     sendOk(res, {
       ...paginatedOf(rows.map((r) => registrationDtoOf(r)), Number(counts[0]?.total ?? 0), page, pageSize),
@@ -903,15 +927,28 @@ export function mountRegistrations(app: Express): void {
     const [rows] = await pool.execute<RegistrationRow[]>('SELECT * FROM registrations WHERE id = ?', [req.params.id]);
     const row = rows[0];
     if (!row) throw new AppError(BIZ_CODES.RESOURCE_NOT_FOUND);
+    // 已取消/已退款/已失效的报名不能再收款：钱没收到、名额已释放，
+    // 再标「已收款」会让财务对着一笔不存在的交易对账。
+    if (row.status !== 'PENDING_PAYMENT' && row.status !== 'CONFIRMED') {
+      throw new AppError(BIZ_CODES.ILLEGAL_TRANSITION, '该报名已取消或已退款，不能再确认收款');
+    }
     if (row.payment_status !== 'UNPAID') {
       throw new AppError(BIZ_CODES.ILLEGAL_TRANSITION, '该报名当前无需确认收款');
     }
-    await pool.execute("UPDATE registrations SET payment_status = 'PAID' WHERE id = ?", [req.params.id]);
+    // 待支付单：收到钱才算「已确认」，状态与收款一起落。
+    // 历史 CONFIRMED+UNPAID（旧数据/手动录入）保持原状态，只改收款标记。
+    const promoting = row.status === 'PENDING_PAYMENT';
+    if (promoting) assertTransition(REGISTRATION_TRANSITIONS, row.status as RegistrationStatus, 'CONFIRMED');
+    await pool.execute(
+      "UPDATE registrations SET payment_status = 'PAID', status = ? WHERE id = ?",
+      [promoting ? 'CONFIRMED' : row.status, req.params.id],
+    );
     await auditOf(res)?.({
       action: 'REGISTRATION_STATUS_CHANGE', targetType: 'registration', targetId: req.params.id,
-      before: { paymentStatus: 'UNPAID' }, after: { paymentStatus: 'PAID' }, actorId: identity.userId,
+      before: { status: row.status, paymentStatus: 'UNPAID' },
+      after: { status: promoting ? 'CONFIRMED' : row.status, paymentStatus: 'PAID' }, actorId: identity.userId,
     });
-    sendOk(res, { id: req.params.id, paymentStatus: 'PAID' });
+    sendOk(res, { id: req.params.id, status: promoting ? 'CONFIRMED' : row.status, paymentStatus: 'PAID' });
   }));
 
   /**
@@ -942,10 +979,20 @@ export function mountRegistrations(app: Express): void {
           assertTransition(REGISTRATION_TRANSITIONS, row.status as RegistrationStatus, 'CHECKED_IN');
           await pool.execute("UPDATE registrations SET status = 'CHECKED_IN' WHERE id = ?", [id]);
         } else {
+          // 与单条 confirm-payment 同口径：已取消/已退款的报名不能再收款
+          if (row.status !== 'PENDING_PAYMENT' && row.status !== 'CONFIRMED') {
+            throw new AppError(BIZ_CODES.ILLEGAL_TRANSITION, '该报名已取消或已退款，不能再确认收款');
+          }
           if (row.payment_status !== 'UNPAID') {
             throw new AppError(BIZ_CODES.ILLEGAL_TRANSITION, '该报名当前无需确认收款');
           }
-          await pool.execute("UPDATE registrations SET payment_status = 'PAID' WHERE id = ?", [id]);
+          // 与单条 confirm-payment 同口径：待支付单收到钱才转已确认
+          const promoting = row.status === 'PENDING_PAYMENT';
+          if (promoting) assertTransition(REGISTRATION_TRANSITIONS, row.status as RegistrationStatus, 'CONFIRMED');
+          await pool.execute(
+            "UPDATE registrations SET payment_status = 'PAID', status = ? WHERE id = ?",
+            [promoting ? 'CONFIRMED' : row.status, id],
+          );
         }
 
         await auditOf(res)?.({

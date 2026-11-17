@@ -28,13 +28,16 @@ const loading = ref(true);
 const error = ref('');
 
 const STATUS_TEXT: Record<string, string> = {
-  CONFIRMED: '已确认', CHECKED_IN: '已签到', COMPLETED: '已完成',
+  PENDING_PAYMENT: '待支付', CONFIRMED: '已确认', CHECKED_IN: '已签到', COMPLETED: '已完成',
   CANCELLED: '已取消', REFUND_PENDING: '取消中', REFUNDED: '已取消',
   WAITLISTED: '候补中', OFFERED: '待确认', EXPIRED: '已失效',
 };
 const statusText = computed(() => (reg.value ? STATUS_TEXT[reg.value.status] ?? reg.value.status : ''));
+// 待支付不算可用票根：钱没确认，不能凭它入场
 const usable = computed(() => reg.value != null
-  && reg.value.status !== 'CANCELLED' && reg.value.status !== 'REFUNDED' && reg.value.status !== 'EXPIRED');
+  && reg.value.status !== 'CANCELLED' && reg.value.status !== 'REFUNDED' && reg.value.status !== 'EXPIRED'
+  && reg.value.status !== 'PENDING_PAYMENT');
+const pendingPayment = computed(() => reg.value?.status === 'PENDING_PAYMENT');
 
 const sessionLabel = computed(() => reg.value?.session?.label ?? reg.value?.sessionLabel ?? '时段待确认');
 const sessionTime = computed(() => {
@@ -127,7 +130,10 @@ onMounted(async () => {
 
         <!-- 下部：到场提示（不设编号：后台没有按号核销的入口，编号只会让人误以为有用） -->
         <div class="px-5 pb-5 pt-4">
-          <div v-if="!usable" class="rounded-xl bg-slate-50 px-3 py-3 text-center text-xs text-slate-500">
+          <div v-if="pendingPayment" class="rounded-xl bg-amber-50 px-3 py-3 text-center text-xs leading-relaxed text-amber-700">
+            该登记尚未付款，票根暂不可用。<br />请联系客服完成付款，运营确认收款后即可凭票根到场。
+          </div>
+          <div v-else-if="!usable" class="rounded-xl bg-slate-50 px-3 py-3 text-center text-xs text-slate-500">
             该记录{{ statusText }}，票根已失效，无法用于现场核销。
           </div>
           <div v-else class="rounded-xl bg-slate-50 px-3 py-3 text-center text-xs leading-relaxed text-slate-600">

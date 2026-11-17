@@ -461,12 +461,13 @@ export async function deleteAccount(
   }
 
   const nowSql = toSqlDateTime();
+  // 待支付也占着名额：注销前必须先取消，否则名额悬空没人收钱也没人释放
   const [live] = await pool.execute<RowDataPacket[]>(
     `SELECT COUNT(*) AS cnt
        FROM registrations r
        JOIN event_sessions s ON s.id = r.session_id
       WHERE r.user_id = ?
-        AND r.status IN ('CONFIRMED', 'CHECKED_IN')
+        AND r.status IN ('PENDING_PAYMENT', 'CONFIRMED', 'CHECKED_IN')
         AND s.start_at > ?`,
     [userId, nowSql],
   );

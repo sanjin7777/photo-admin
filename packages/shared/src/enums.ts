@@ -63,6 +63,7 @@ export const REGISTRATION_STATUSES = [
   'WAITLISTED',
   'OFFERED',
   'EXPIRED',
+  'PENDING_PAYMENT',
   'CONFIRMED',
   'REFUND_PENDING',
   'REFUNDED',
@@ -77,6 +78,12 @@ export const REGISTRATION_TRANSITIONS: TransitionMap<RegistrationStatus> = {
   WAITLISTED: ['EXPIRED', 'CANCELLED'],
   OFFERED: ['EXPIRED', 'CANCELLED'],
   EXPIRED: [],
+  /**
+   * 待支付：非会员线上登记后的初始态——名额已占、但钱还没收。
+   * 运营确认收款后才转 CONFIRMED；用户/运营也可在收款前直接取消（无资金可退）。
+   * 不允许直接签到：没付款的人不能凭「待支付」入场。
+   */
+  PENDING_PAYMENT: ['CONFIRMED', 'CANCELLED'],
   CONFIRMED: ['REFUND_PENDING', 'CHECKED_IN', 'CANCELLED'],
   /** 审核拒绝时回到 CONFIRMED（报名仍然有效） */
   REFUND_PENDING: ['REFUNDED', 'CONFIRMED'],

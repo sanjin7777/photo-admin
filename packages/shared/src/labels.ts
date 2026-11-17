@@ -19,6 +19,7 @@ export const STATUS_LABELS: Readonly<Record<string, string>> = {
   /* 报名状态（WAITLISTED / OFFERED 为候补时代的历史数据，仍可能出现在旧记录里） */
   WAITLISTED: '候补中',
   OFFERED: '待确认递补',
+  PENDING_PAYMENT: '待支付',
   CONFIRMED: '已确认',
   REFUND_PENDING: '退款中',
   CHECKED_IN: '已签到',

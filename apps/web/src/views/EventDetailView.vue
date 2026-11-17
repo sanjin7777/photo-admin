@@ -44,6 +44,13 @@ interface FailGuide {
 }
 const failGuide = ref<FailGuide | null>(null);
 
+/**
+ * 非会员登记成功后的「待支付」引导。
+ * 登记成功 ≠ 报名确认：名额先保留，联系客服付款、运营确认收款后才生效。
+ * 弹窗里直接给客服二维码（后台「海报二维码」配置），避免用户找不到付款入口。
+ */
+const pendingGuide = ref<{ seats: number; amountText: string | null } | null>(null);
+
 function guideForFailure(e: AppError): FailGuide | null {
   const needQr = serviceQrUrl.value
     ? '可下滑到页面底部扫描客服二维码，或联系群内客服。'
@@ -520,6 +527,18 @@ async function doSubmit(): Promise<void> {
     confirmOpen.value = false;
     // 前端展示的是按当前等级预估的积分；真实结算以服务端逐条 feeCent 为准
     const charged = batch.registrations.reduce((sum, r) => sum + Number(r.feeCent), 0);
+    /**
+     * 非会员：登记只是「待支付」，钱还没收。不能像会员那样 toast 一句就跳走——
+     * 用户会以为登记完就能到场。这里用弹窗明确告知「联系客服付款后才算确认」，
+     * 并把客服二维码直接放进弹窗，用户看完再决定去「我的登记」还是留下扫码。
+     */
+    if (!session.isMember) {
+      pendingGuide.value = {
+        seats: batch.seats,
+        amountText: charged > 0 ? pts(charged) : null,
+      };
+      return;
+    }
     ui.notify(
       `登记成功，共 ${batch.seats} 个名额${charged > 0 ? `，消耗 ${pts(charged)}` : ''}`,
       'success',
@@ -621,14 +640,15 @@ async function doSubmit(): Promise<void> {
 
       <!-- 场次定价 + 时段：上提到图区之前。
            移动端原来要滚过整块海报和所有作品图才能看到定价和可选时段，
-           而这两块恰好是登记决策的唯一依据，所以放在主信息之后。 -->
+           而这两块恰好是登记决策的唯一依据，所以放在主信息之后。
+           各档价格对游客可见（公开信息）；但等级高亮与结算提示只对登录用户展示。 -->
       <div v-if="event.prices?.length" class="mt-6">
         <div v-if="session.isMember" class="mb-2 flex items-end justify-between">
           <span class="text-xs text-slate-500">你当前为 {{ labelOf(session.level) }} 会员</span>
         </div>
         <div class="grid grid-cols-3 gap-2">
           <div v-for="p in event.prices" :key="p.level" class="rounded-xl border bg-white p-2 text-center transition sm:p-3"
-            :class="p.level === myPriceLevel
+            :class="session.user && p.level === myPriceLevel
               ? 'border-brand bg-brand-50 shadow-sm' : 'border-slate-200 opacity-75'">
             <p class="text-xs" :class="p.level === 'SVIP' ? 'text-gold' : p.level === 'VIP' ? 'text-brand-soft' : 'text-slate-500'">
               {{ p.level === 'PUBLIC' ? '标准' : `${p.level} 专属` }}
@@ -640,7 +660,7 @@ async function doSubmit(): Promise<void> {
         <p v-if="session.isMember && price !== fullPrice" class="mt-2 text-xs text-gold">
           你当前按会员等级结算，比标准少用 {{ ptsNum(fullPrice - price) }}
         </p>
-        <p v-else-if="!session.isMember" class="mt-2 text-xs text-slate-500">
+        <p v-else-if="session.user && !session.isMember" class="mt-2 text-xs text-slate-500">
           登记后按会员等级结算，无需在线支付。
         </p>
       </div>
@@ -793,8 +813,8 @@ async function doSubmit(): Promise<void> {
         </div>
       </div>
 
-      <!-- 须知 -->
-      <div class="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
+      <!-- 须知：仅登录用户可见（游客不展示登记规则与结算说明） -->
+      <div v-if="session.user" class="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 class="mb-2 text-sm font-semibold text-slate-900">登记须知</h2>
         <p v-if="event.notice" class="whitespace-pre-line text-xs leading-relaxed text-slate-600">{{ event.notice }}</p>
         <p v-else class="whitespace-pre-line text-xs leading-relaxed text-slate-600">
@@ -802,7 +822,7 @@ async function doSubmit(): Promise<void> {
         </p>
         <ul class="mt-2 space-y-1 text-xs leading-relaxed text-slate-500">
           <li>· 请按所选时段提前到场，迟到不延长拍摄时间。</li>
-          <li>· 会员登记按所属等级结算积分；积分由运营发放，不可购买、不可转让、不可兑现。普通用户登记后由运营确认名额。</li>
+          <li>· 会员登记按所属等级结算积分；积分由运营发放，不可购买、不可转让、不可兑现。普通用户登记后为「待支付」，联系客服付款、运营确认收款后才算登记成功。</li>
           <li v-if="event.allowProxyShoot">· 本场支持代拍，具体安排请联系客服。</li>
           <li v-if="event.privateBookingNote">· {{ event.privateBookingNote }}</li>
         </ul>
@@ -825,8 +845,8 @@ async function doSubmit(): Promise<void> {
         </div>
       </div>
 
-      <!-- 吸底登记条（移动端避开底部导航） -->
-      <div class="safe-bottom fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-30 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-6px_20px_-12px_rgba(15,23,42,0.25)] backdrop-blur
+      <!-- 吸底登记条（移动端避开底部导航）：仅登录用户展示；游客整条不显示（2026-11-17 用户要求） -->
+      <div v-if="session.user" class="safe-bottom fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-30 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-6px_20px_-12px_rgba(15,23,42,0.25)] backdrop-blur
         md:static md:mt-6 md:border-0 md:bg-transparent md:p-0 md:shadow-none">
         <div class="mx-auto flex max-w-3xl items-center gap-3">
           <div class="min-w-0">
@@ -834,7 +854,7 @@ async function doSubmit(): Promise<void> {
               {{ ptsNum(price) }}<span class="ml-1 text-xs font-normal text-slate-500">/{{ event.prices?.[0]?.unitLabel ?? '场' }}</span>
             </p>
             <p class="clamp-1 text-xs text-slate-500">
-              登记后按会员等级结算
+              {{ session.isMember ? '登记后按会员等级结算' : '登记后联系客服付款确认' }}
               <!-- 展示「当前选中时段」不可报的原因，而不是整场的原因 -->
               <span v-if="selectedBlockText" class="text-amber-600"> · {{ selectedBlockText }}</span>
             </p>
@@ -907,11 +927,11 @@ async function doSubmit(): Promise<void> {
           <div class="flex justify-between gap-4"><span class="text-slate-500">基准积分</span><span class="text-slate-500">{{ ptsNum(price * seats) }}</span></div>
           <div v-if="selectedDiscount > 0" class="flex justify-between gap-4"><span class="text-slate-500">优惠券减免</span><span class="text-emerald-600">-{{ ptsNum(selectedDiscount) }}</span></div>
           <div class="flex justify-between gap-4">
-            <span class="text-slate-500">本次消耗</span>
+            <span class="text-slate-500">{{ session.isMember ? '本次消耗' : '应付金额' }}</span>
             <span class="font-semibold text-brand-soft">{{ ptsNum(payable) }}<span v-if="selectedDiscount === 0" class="ml-1 text-xs font-normal text-slate-500">（{{ ptsNum(price) }} × {{ seats }} 人）</span></span>
           </div>
-          <div class="flex justify-between gap-4"><span class="text-slate-500">结算方式</span><span class="text-right text-slate-900">按会员等级自动结算积分，无需在线支付</span></div>
-          <div class="flex justify-between gap-4"><span class="text-slate-500">取消规则</span><span class="text-right text-slate-900">开始前 {{ event.refundPolicy.freeCancelBeforeHours }} 小时可取消，积分全额退回</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">结算方式</span><span class="text-right text-slate-900">{{ session.isMember ? '按会员等级自动结算积分，无需在线支付' : '联系客服线下付款，确认收款后登记生效' }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">取消规则</span><span class="text-right text-slate-900">{{ session.isMember ? `开始前 ${event.refundPolicy.freeCancelBeforeHours} 小时可取消，积分全额退回` : '付款前可随时取消；付款后按场次取消规则处理' }}</span></div>
         </div>
         <!-- 时段冲突提示 -->
         <div v-if="conflicts.length" class="mt-3 rounded-lg bg-rose-50 px-3 py-2.5 ring-1 ring-rose-200">
@@ -925,8 +945,8 @@ async function doSubmit(): Promise<void> {
         </div>
 
         <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
-          {{ session.isMember ? '确认后将从积分账户扣除相应积分并占用名额，实际结算以服务端为准。' : '确认后名额即为你保留，由运营核对会员身份后确认。' }}
-          一次登记 {{ seats }} 个名额会生成 {{ seats }} 条独立记录，每位都可单独取消，取消后积分按规则退回。
+          {{ session.isMember ? '确认后将从积分账户扣除相应积分并占用名额，实际结算以服务端为准。' : '确认后名额先为你保留（待支付），请联系客服完成付款，运营确认收款后登记才正式生效。' }}
+          一次登记 {{ seats }} 个名额会生成 {{ seats }} 条独立记录，每位都可单独取消{{ session.isMember ? '，取消后积分按规则退回' : '，付款前取消不产生费用' }}。
         </p>
         <div class="mt-5 flex gap-2">
           <button class="btn-ghost flex-1" @click="confirmOpen = false">再想想</button>
@@ -953,6 +973,32 @@ async function doSubmit(): Promise<void> {
           <button v-if="failGuide.action" class="btn-primary flex-1 py-2 text-sm" @click="failGuide.action.run()">
             {{ failGuide.action.label }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 非会员登记成功：待支付引导（名额已保留，付款确认后才生效） -->
+    <div v-if="pendingGuide" class="fixed inset-0 z-[160] flex items-center justify-center bg-slate-900/50 p-5"
+      @click.self="pendingGuide = null">
+      <div class="w-full max-w-sm rounded-2xl bg-white p-5 shadow-float ring-1 ring-slate-200">
+        <div class="flex items-start gap-3">
+          <span class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-base text-amber-500">¥</span>
+          <div class="min-w-0">
+            <h3 class="text-base font-semibold text-slate-900">登记成功，待支付</h3>
+            <p class="mt-1.5 text-xs leading-relaxed text-slate-600">
+              已为你保留 {{ pendingGuide.seats }} 个名额{{ pendingGuide.amountText ? `（应付 ${pendingGuide.amountText}）` : '' }}。
+              请联系客服完成付款，运营确认收款后登记才正式生效；付款前可随时在「我的登记」中取消。
+            </p>
+          </div>
+        </div>
+        <div v-if="serviceQrUrl" class="mt-4 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+          <img :src="serviceQrUrl" alt="客服二维码" class="h-20 w-20 shrink-0 rounded-lg border border-slate-200 bg-white object-contain" />
+          <p class="text-xs leading-relaxed text-slate-500">扫码添加客服微信付款。<br />手机端长按识别二维码，电脑端请用微信扫码。</p>
+        </div>
+        <p v-else class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">请在群内联系客服完成付款。</p>
+        <div class="mt-5 flex gap-2">
+          <button class="btn-ghost flex-1 py-2 text-sm" @click="pendingGuide = null">留在本页</button>
+          <button class="btn-primary flex-1 py-2 text-sm" @click="pendingGuide = null; void router.push('/my')">去看我的登记</button>
         </div>
       </div>
     </div>

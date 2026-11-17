@@ -82,17 +82,18 @@ const unit = computed(() => props.event.prices?.[0]?.unitLabel ?? '场');
       </div>
 
       <div class="mt-3 flex items-end justify-between border-t border-slate-100 pt-3">
+        <!-- 价格各档对游客可见（公开信息）；但结算提示与会员划线价只对登录用户展示 -->
         <div>
           <p class="text-base font-semibold text-brand-soft">
-            {{ ptsNum(myPrice) }}<span class="ml-1 text-xs font-normal text-slate-500">/{{ unit }}</span>
+            {{ ptsNum(session.user ? myPrice : fullPrice) }}<span class="ml-1 text-xs font-normal text-slate-500">/{{ unit }}</span>
           </p>
           <p v-if="session.isMember && myPrice !== fullPrice" class="text-xs text-slate-500 line-through">{{ ptsNum(fullPrice) }}</p>
-          <p v-else-if="!session.isMember" class="text-xs text-slate-500">登记后按会员等级结算</p>
+          <p v-else-if="session.user && !session.isMember" class="text-xs text-slate-500">登记后按会员等级结算</p>
         </div>
-        <span v-if="closed" class="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-500">
+        <span v-if="closed" class="ml-auto rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-500">
           登记已截止
         </span>
-        <span v-else class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition group-hover:bg-brand">
+        <span v-else class="ml-auto rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition group-hover:bg-brand">
           查看详情
         </span>
       </div>
