@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@9.12.0",
   "scripts": {
+    "build": "pnpm --filter @photo/web --filter @photo/admin build",
     "typecheck": "pnpm -r --parallel typecheck",
     "verify": "node scripts/verify.mjs",
     "verify:routes": "pnpm --filter @photo/server exec tsx --tsconfig tsconfig.json ../../scripts/verify-routes.ts",

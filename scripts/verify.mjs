@@ -1973,6 +1973,15 @@ assert.ok(packPy.includes("m.name.startswith(TOP + '/')"), '自检须校验所�
 assert.ok(packPy.includes("elif info.name.endswith('.sh')"), '脚本须保留 .sh 可执行位');
 assert.ok(packPy.includes('info.mode = 0o755'), '目录与脚本须为 0755');
 
+// Windows 上没有 bash 时用 pack.ps1 打包；它必须复用 pack.py 来写权限位，
+// 否则会退回 bsdtar —— 那个 tar 会把 .sh 打成 666，线上 ./deploy.sh 直接 Permission denied。
+const packPs1 = read('deploy/pack.ps1');
+assert.ok(packPs1.includes("'deploy/pack.py'"), 'pack.ps1 须调用 pack.py 写入 Unix 权限位');
+assert.ok(packPs1.includes('dist/index.html'), 'pack.ps1 须先检查双端构建产物存在');
+assert.ok(packPs1.includes('pnpm build'), '缺少 dist 时须提示先执行 pnpm build');
+assert.ok(!packPs1.includes('system32\\tar'), 'pack.ps1 不得使用会丢执行位的 Windows bsdtar');
+assert.ok(read('package.json').includes('"build": "pnpm --filter @photo/web --filter @photo/admin build"'), '根 package.json 须提供 build 脚本');
+
 /* ---------- 第 52 组：只给账号串认不出人，全站须同时下发并显示昵称 ---------- */
 // 运营反馈：报名管理「用户」列只有 c1021522802 / symj_sunshine_young 这类自起的微信号，
 // 想确认「这是谁」得去会员管理再搜一次。凡是展示用户的地方，昵称必须和微信号一起到手。
