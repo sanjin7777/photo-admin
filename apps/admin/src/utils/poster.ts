@@ -14,12 +14,14 @@
  */
 import type { EventDto, EventSessionDto } from '@photo/shared';
 import {
+  DEFAULT_POSTER_THEME,
   POSTER_BLOCK_META,
   posterPresetOf,
   type PosterBlockDto,
   type PosterBlockType,
   type PosterLayoutDto,
   type PosterPresetKey,
+  type PosterThemeDto,
 } from '@photo/shared';
 
 const W = 1080;
@@ -31,11 +33,157 @@ const SITE_QR_SRC = `${import.meta.env.BASE_URL}site-qr.png`;
 export const DEFAULT_BRAND_TITLE = "CAT'S PAW · 猫爪摄影会";
 
 const FONT = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif';
-const WHITE = '#ffffff';
-const MUTED = 'rgba(255,255,255,0.72)';
-const FAINT = 'rgba(255,255,255,0.5)';
-const ACCENT = '#f43f5e';
-const INFO_BG = '#080a0e';
+
+/**
+ * 「支持代拍」的橙色是**固定的语义色**，不跟随主题：
+ * 它和主色印在标题行的「人数比」必须一眼分得开（用户 2026-11-17 明确要求）。
+ */
+const PROXY_TAG = '#f5a524';
+
+/* ==================================================================== */
+/*                          主题调色板（派生色）                          */
+/* ==================================================================== */
+
+type Rgb = { r: number; g: number; b: number };
+
+/**
+ * 解析颜色为 RGB。
+ *
+ * 除了 schema 允许的 6 位 hex，还要认 3 位 hex 与 rgb()/rgba()：
+ * 区块级 `color` 覆盖允许 rgba 字符串，取色器也可能给出短写法。
+ */
+function toRgb(input: string): Rgb {
+  const s = input.trim();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+  if (hex) {
+    const h = hex[1]!;
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    return {
+      r: parseInt(full.slice(0, 2), 16),
+      g: parseInt(full.slice(2, 4), 16),
+      b: parseInt(full.slice(4, 6), 16),
+    };
+  }
+  const fn = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s);
+  if (fn) {
+    return { r: Number(fn[1]), g: Number(fn[2]), b: Number(fn[3]) };
+  }
+  return { r: 255, g: 255, b: 255 };
+}
+
+function rgba(c: Rgb, a: number): string {
+  return `rgba(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)},${a})`;
+}
+
+/** 按比例混色：t=0 取 a，t=1 取 b */
+function mix(a: Rgb, b: Rgb, t: number): Rgb {
+  return {
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+  };
+}
+
+function hexOf(c: Rgb): string {
+  const p = (n: number): string => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  return `#${p(c.r)}${p(c.g)}${p(c.b)}`;
+}
+
+/** 相对亮度：用来判断「这个底是深色还是浅色」，决定阴影/蒙层方向 */
+function luminance(c: Rgb): number {
+  const f = (v: number): number => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+}
+
+/**
+ * 渲染用的完整调色板。
+ *
+ * 设计原则：**用户只选三个色，其余全部派生**。
+ * 这样浅色主题不会出现「白底白字」，深色主题也不会出现「黑底黑字」——
+ * 次要文字是正文色按透明度衰减，蒙层与描边按底色明暗自动反向。
+ */
+interface PosterPalette {
+  /** 画布底色 */
+  bg: string;
+  /** 主色（强调色）原值 */
+  accent: string;
+  /** 正文色原值：标题 / 时段名 */
+  text: string;
+  /** 次级正文（84%）：品牌名、副标题 */
+  strong: string;
+  /** 弱化正文（72%）：时间、明细 */
+  muted: string;
+  /** 更弱（50%）：场次标题行、页脚、占位提示 */
+  faint: string;
+  /** 极弱（18%）：分隔线底线、图片描边 */
+  hairline: string;
+  /** 卡片底（8%）：价格 PUBLIC 档 */
+  cardFill: string;
+  /** 卡片描边（16%） */
+  cardStroke: string;
+  /** 图片 contain 时的压暗/提亮蒙层 */
+  scrim: string;
+  /** 角标渐变末端 */
+  tagScrim: string;
+  /** 文字阴影：浅底不投影（白底上黑影会脏） */
+  textShadow: string;
+  /** 区块投影 */
+  blockShadow: string;
+  /** 底色是否偏亮 */
+  light: boolean;
+  /** 三档价格配色 */
+  price: Record<'PUBLIC' | 'VIP' | 'SVIP', { fill: string; stroke: string; label: string; amount: string }>;
+}
+
+function paletteOf(theme: PosterThemeDto | null | undefined): PosterPalette {
+  const t = theme ?? DEFAULT_POSTER_THEME;
+  const bg = toRgb(t.bg);
+  const text = toRgb(t.text);
+  const accent = toRgb(t.accent);
+  const light = luminance(bg) > 0.45;
+  /** 蒙层方向：深底压暗、浅底提亮，保证图片上的字始终可读 */
+  const shade = light ? { r: 255, g: 255, b: 255 } : { r: 8, g: 10, b: 14 };
+
+  /** VIP 用主色，SVIP 用主色偏金的变体：两档必须能区分 */
+  const gold = mix(accent, { r: 216, g: 180, b: 90 }, 0.72);
+  const toneOf = (c: Rgb): { fill: string; stroke: string; label: string; amount: string } => ({
+    fill: rgba(c, light ? 0.1 : 0.16),
+    stroke: rgba(c, 0.55),
+    /** 标签色：浅底要往深里压，否则淡色字在白底上看不见 */
+    label: hexOf(light ? mix(c, bg, 0.35) : mix(c, { r: 255, g: 255, b: 255 }, 0.45)),
+    amount: hexOf(light ? mix(c, { r: 20, g: 20, b: 20 }, 0.55) : mix(c, { r: 255, g: 255, b: 255 }, 0.78)),
+  });
+
+  return {
+    bg: t.bg,
+    accent: t.accent,
+    text: t.text,
+    strong: rgba(text, 0.92),
+    muted: rgba(text, 0.72),
+    faint: rgba(text, 0.5),
+    hairline: rgba(text, 0.18),
+    cardFill: rgba(text, 0.08),
+    cardStroke: rgba(text, 0.16),
+    scrim: rgba(shade, light ? 0.3 : 0.42),
+    tagScrim: rgba(shade, light ? 0.72 : 0.82),
+    textShadow: light ? 'transparent' : 'rgba(0,0,0,0.55)',
+    blockShadow: light ? 'rgba(15,23,42,0.18)' : 'rgba(0,0,0,0.55)',
+    light,
+    price: {
+      PUBLIC: {
+        fill: rgba(text, 0.08),
+        stroke: rgba(text, 0.16),
+        label: rgba(text, 0.62),
+        amount: t.text,
+      },
+      VIP: toneOf(accent),
+      SVIP: toneOf(gold),
+    },
+  };
+}
 
 function px(size: number, weight: number | string = 400): string {
   return `${weight} ${size}px ${FONT}`;
@@ -187,6 +335,7 @@ function drawImageBlock(
   ctx: CanvasRenderingContext2D,
   img: HTMLImageElement | null,
   block: PosterBlockDto,
+  pal: PosterPalette,
   placeholder?: string,
   /** 角标文案（如「当日服装 · 白电波」）；不传表示不加角标 */
   tag: string | null = null,
@@ -198,15 +347,15 @@ function drawImageBlock(
     // 缺图时画占位框而不是留空，导出后能一眼看出「这里本该有图」
     ctx.save();
     roundRect(ctx, x, y, w, h, 18);
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillStyle = pal.cardFill;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.strokeStyle = pal.hairline;
     ctx.lineWidth = 2;
     ctx.setLineDash([10, 10]);
     ctx.stroke();
     ctx.setLineDash([]);
     if (placeholder) {
-      ctx.fillStyle = FAINT;
+      ctx.fillStyle = pal.faint;
       ctx.font = px(Math.min(22, Math.max(14, Math.round(h / 8))), 500);
       ctx.textAlign = 'center';
       ctx.fillText(placeholder, x + w / 2, y + h / 2 + 8);
@@ -226,7 +375,7 @@ function drawImageBlock(
     ctx.filter = 'blur(20px)';
     ctx.drawImage(img, x + (w - cw) / 2, y + (h - ch) / 2, cw, ch);
     ctx.filter = 'none';
-    ctx.fillStyle = 'rgba(8,10,14,0.42)';
+    ctx.fillStyle = pal.scrim;
     ctx.fillRect(x, y, w, h);
     drawContain(ctx, img, x, y, w, h);
   } else {
@@ -243,15 +392,20 @@ function drawImageBlock(
   if (tag && h >= 90) {
     const barH = Math.min(44, Math.round(h * 0.16));
     const grad = ctx.createLinearGradient(0, y + h - barH * 1.6, 0, y + h);
-    grad.addColorStop(0, 'rgba(8,10,14,0)');
-    grad.addColorStop(1, 'rgba(8,10,14,0.82)');
+    // 渐变起点必须同色全透明：换成 'transparent' 会在中途插值出灰边
+    grad.addColorStop(0, pal.tagScrim.replace(/,[\d.]+\)$/, ',0)'));
+    grad.addColorStop(1, pal.tagScrim);
     ctx.fillStyle = grad;
     ctx.fillRect(x, y + h - barH * 1.6, w, barH * 1.6);
 
-    ctx.fillStyle = ACCENT;
+    ctx.fillStyle = pal.accent;
     ctx.fillRect(x, y + h - barH, Math.min(6, w), barH);
 
-    ctx.fillStyle = WHITE;
+    /**
+     * 角标文字压在蒙层上，颜色要跟蒙层反着来：
+     * 深色主题蒙层压暗 → 白字；浅色主题蒙层提亮 → 深字。
+     */
+    ctx.fillStyle = pal.light ? '#1c1917' : '#ffffff';
     ctx.font = px(Math.min(24, Math.max(15, Math.round(barH * 0.55))), 600);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -273,7 +427,7 @@ function drawImageBlock(
   ctx.restore();
 
   roundRect(ctx, x, y, w, h, 18);
-  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.strokeStyle = pal.cardStroke;
   ctx.lineWidth = 2;
   ctx.stroke();
 }
@@ -289,13 +443,13 @@ function tagOf(type: PosterBlockType): string | null {
 }
 
 /** 主视觉封面帧：只有贴边通栏的区块需要投影，否则在浅色图上看不出边界 */
-function frameBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): void {
+function frameBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
   ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowColor = pal.blockShadow;
   ctx.shadowBlur = 40;
   ctx.shadowOffsetY = 10;
   roundRect(ctx, block.x, block.y, block.w, block.h, 18);
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = pal.bg;
   ctx.fill();
   ctx.restore();
 }
@@ -389,6 +543,7 @@ function drawTitleIn(
   block: PosterBlockDto,
   text: string,
   align: CanvasTextAlign,
+  pal: PosterPalette,
 ): void {
   const content = (block.text?.trim() || text).trim();
   if (!content) return;
@@ -460,10 +615,10 @@ function drawTitleIn(
   }
 
   ctx.font = px(size, 800);
-  ctx.fillStyle = block.color || WHITE;
+  ctx.fillStyle = block.color || pal.text;
   ctx.textAlign = align;
   ctx.textBaseline = 'alphabetic';
-  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowColor = pal.textShadow;
   ctx.shadowBlur = 24;
   ctx.shadowOffsetY = 4;
 
@@ -488,13 +643,14 @@ function drawBrandBlock(
   ctx: CanvasRenderingContext2D,
   block: PosterBlockDto,
   brandTitle: string | null,
+  pal: PosterPalette,
 ): void {
   const text = (block.text ?? brandTitle ?? '').trim() || DEFAULT_BRAND_TITLE;
 
-  ctx.fillStyle = block.color || ACCENT;
+  ctx.fillStyle = block.color || pal.accent;
   ctx.fillRect(block.x, block.y + 10, 6, 34);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillStyle = pal.strong;
   ctx.font = px(block.fontSize ?? 28, 600);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
@@ -520,6 +676,7 @@ function drawIntroBlock(
   ctx: CanvasRenderingContext2D,
   block: PosterBlockDto,
   event: EventDto,
+  pal: PosterPalette,
 ): void {
   const align = (block.align ?? 'left') as CanvasTextAlign;
   const ax = align === 'center' ? block.x + block.w / 2 : align === 'right' ? block.x + block.w : block.x;
@@ -538,12 +695,12 @@ function drawIntroBlock(
 
   if (needTwo && block.h >= 72) {
     // 两行都放得下：副标题一行 + 明细一行
-    ctx.fillStyle = block.color || 'rgba(255,255,255,0.84)';
+    ctx.fillStyle = block.color || pal.strong;
     ctx.font = px(block.fontSize ?? 28, 500);
     ctx.textAlign = align;
     ctx.fillText(wrapText(ctx, subtitle, block.w, 1)[0] ?? '', ax, top);
 
-    ctx.fillStyle = MUTED;
+    ctx.fillStyle = pal.muted;
     ctx.font = px(24, 400);
     ctx.textAlign = align;
     ctx.fillText(wrapText(ctx, detail, block.w, 1)[0] ?? '', ax, top + 34);
@@ -553,27 +710,37 @@ function drawIntroBlock(
   // 高度不够两行：优先展示信息量更大的那一行（有明细就放弃副标题）
   const single = detail || subtitle;
   if (!single) return;
-  ctx.fillStyle = detail ? MUTED : (block.color || 'rgba(255,255,255,0.84)');
+  ctx.fillStyle = detail ? pal.muted : (block.color || pal.strong);
   ctx.font = px(block.fontSize ?? 26, detail ? 400 : 500);
   ctx.textAlign = align;
   ctx.fillText(wrapText(ctx, single, block.w, 1)[0] ?? '', ax, top);
 }
 
-function drawDividerBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): void {
+function drawDividerBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
   const y = block.y + block.h / 2;
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.strokeStyle = pal.hairline;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(block.x, y);
   ctx.lineTo(block.x + block.w, y);
   ctx.stroke();
 
-  ctx.strokeStyle = block.color || ACCENT;
+  ctx.strokeStyle = block.color || pal.accent;
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.moveTo(block.x, y);
   ctx.lineTo(block.x + Math.min(92, block.w), y);
   ctx.stroke();
+}
+
+/** 场次区块的排版结果：供渲染器回报给设计器，让「高度不够」变成可见提示而不是静默丢时段 */
+interface SessionsLayout {
+  /** 因高度不足而没能画出来的时段数 */
+  hidden: number;
+  /** 实际使用的行高（px） */
+  rowH: number;
+  /** 要把全部时段按标准行高排完所需的区块高度（设计器「一键拉高」用） */
+  neededH: number;
 }
 
 /**
@@ -582,94 +749,133 @@ function drawDividerBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto):
  * 代拍不是「时段」，不参与这里的时间列——它没有具体开始时间，
  * 显示成 `代拍 15:00 – 18:20` 会让人误以为是一个可选的拍摄时间段。
  * 改为在标题行右侧统一标一句「支持代拍」。
+ *
+ * 高度自适应（2026-11-17 修）：
+ * 旧实现把「能排几行」直接当成「能排几个时段」去 slice，双人版区块只有 160px
+ * → 算出 2 行却只画 2 个时段，第三场被静默丢掉（用户实测截图）。
+ * 现在容量 = 行数 × 2 列，行高与字号按可用高度收缩，
+ * 真的放不下时在标题里明确标出「+N 场」并回报给设计器，绝不无声无息地少画。
  */
 function drawSessionsBlock(
   ctx: CanvasRenderingContext2D,
   block: PosterBlockDto,
   sessions: EventSessionDto[],
   hasProxy: boolean,
-): void {
+  /** 整场人数比：一个场次只有一个比例，印在标题行一次即可 */
+  eventRatio: string | null = null,
+  pal: PosterPalette = paletteOf(null),
+): SessionsLayout {
   const normal = sessions.filter((s) => s.kind !== 'PROXY');
-  if (!normal.length && !hasProxy) return;
+  const neededH = 40 + Math.max(1, Math.ceil(normal.length / 2)) * 40;
+  if (!normal.length && !hasProxy) return { hidden: 0, rowH: 40, neededH };
 
   const sorted = [...normal].sort((a, b) => a.startAt.localeCompare(b.startAt));
-  // 高度决定能排几行：标题占 44px，每行 40px
-  const maxRows = Math.max(1, Math.min(8, Math.floor((block.h - 44) / 40)));
-  const cellW = Math.floor((block.w - 24) / 2);
+  const cols = 2;
   const colGap = 24;
-  const rowH = 40;
+  const cellW = Math.floor((block.w - colGap) / cols);
 
+  /** 标题行占位：基线在 +22，下方留到 +40 才开始排时段 */
+  const HEAD_H = 40;
+  const avail = Math.max(0, block.h - HEAD_H);
+  const needRows = Math.max(1, Math.ceil(sorted.length / cols));
+  // 行高理想 40px；高度不够就压缩，但不低于 24px（再小字就挤成一团）
+  const rowH = Math.max(24, Math.min(40, Math.floor(avail / needRows) || 24));
+  const fitRows = Math.max(1, Math.floor(avail / rowH));
+  const capacity = fitRows * cols;
+  const shown = sorted.slice(0, capacity);
+  const hidden = Math.max(0, sorted.length - shown.length);
+
+  /**
+   * 标题行三段（场次安排 / 支持代拍 / 人数比）总宽可能超出区块，
+   * 尤其双人版左栏更窄。先整体缩字号，再把日期换成短格式，
+   * 保证「人数比」不会被裁掉半截 —— 它是运营明确要求必须体现的信息。
+   */
+  const ratio = (eventRatio ?? '').trim();
+  const suffix = hidden > 0 ? `（+${hidden} 场）` : sorted.length > cols ? `（共 ${sorted.length} 场）` : '';
+  const dayText = sorted.length ? dayLabel(sorted[0]!.startAt) : '';
+  const shortDayText = sorted.length ? shortDay(sorted[0]!.startAt) : '';
+  const headMain = (day: string, extra: string): string => `场次安排${day ? ` · ${day}` : ''}${extra}`;
+  const headWidth = (main: string, size: number): number => {
+    ctx.font = px(size, 600);
+    let w = ctx.measureText(main).width;
+    if (hasProxy) w += 12 + ctx.measureText('· 支持代拍').width;
+    if (ratio) w += 12 + ctx.measureText(`· ${ratio}`).width;
+    return w;
+  };
+
+  // 先缩字号，再把日期换短格式，最后才丢掉「共 N 场」——人数比与代拍标记不能丢
+  let main = headMain(dayText, suffix);
+  let headSize = 22;
+  while (headSize > 16 && headWidth(main, headSize) > block.w) headSize -= 1;
+  if (headWidth(main, headSize) > block.w) {
+    main = headMain(shortDayText, suffix);
+    while (headSize > 15 && headWidth(main, headSize) > block.w) headSize -= 1;
+  }
+  if (headWidth(main, headSize) > block.w) main = headMain(shortDayText, '');
+
+  ctx.font = px(headSize, 600);
   ctx.textAlign = 'left';
-  ctx.fillStyle = FAINT;
-  ctx.font = px(22, 600);
-  const extra = sorted.length > maxRows ? `（共 ${sorted.length} 场）` : '';
-  const head = sorted.length
-    ? `场次安排 · ${dayLabel(sorted[0]!.startAt)}${extra}`
-    : '场次安排';
-  ctx.fillText(head, block.x, block.y + 22);
-
-  // 「支持代拍」紧跟标题右侧，不占一行、也不与时间混排
+  ctx.fillStyle = pal.faint;
+  ctx.fillText(main, block.x, block.y + 22);
+  let headCursor = block.x + ctx.measureText(main).width + 12;
+  // 「支持代拍」紧跟标题右侧，不占一行、也不与时间混排；固定橙色不跟主题
   if (hasProxy) {
-    const headW = ctx.measureText(head).width;
-    ctx.fillStyle = '#f5a524';
-    ctx.font = px(22, 600);
-    ctx.fillText('· 支持代拍', block.x + headW + 12, block.y + 22);
+    ctx.fillStyle = PROXY_TAG;
+    ctx.font = px(headSize, 600);
+    ctx.fillText('· 支持代拍', headCursor, block.y + 22);
+    headCursor += ctx.measureText('· 支持代拍').width + 12;
+  }
+  /**
+   * 人数比是整场固定一个值（如 4V1），在标题行印一次就够，
+   * 不逐时段重复——运营填在整场「人数比」里，海报必须体现出来。
+   * 用主题主色（与 VIP 价同色系），和橙色的「支持代拍」区分开，避免两个标签混成一片。
+   */
+  if (ratio) {
+    ctx.fillStyle = pal.accent;
+    ctx.font = px(headSize, 600);
+    ctx.fillText(`· ${ratio}`, headCursor, block.y + 22);
   }
 
-  const firstBaseline = block.y + 62;
+  // 字号跟着行高走：行被压扁时字也同比缩小，避免上下行叠字
+  const labelSize = Math.max(16, Math.min(25, Math.round(rowH * 0.62)));
+  const timeSize = Math.max(14, Math.min(22, Math.round(rowH * 0.55)));
+  const firstBaseline = block.y + HEAD_H + Math.round(rowH * 0.62);
   const firstDay = sorted.length ? dayKey(sorted[0]!.startAt) : '';
+  // 名称列最多占单元格的 42%，其余留给时间（时间是报名决策的关键信息）
+  const labelW = Math.max(56, Math.floor(cellW * 0.42));
 
-  sorted.slice(0, maxRows).forEach((s, i) => {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
+  shown.forEach((s, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
     const x = block.x + col * (cellW + colGap);
     const y = firstBaseline + row * rowH;
 
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = px(25, 600);
+    ctx.fillStyle = pal.strong;
+    ctx.font = px(labelSize, 600);
     ctx.textAlign = 'left';
-    ctx.fillText(wrapText(ctx, s.label || `第${i + 1}场`, 108, 1)[0] ?? '', x, y);
+    ctx.fillText(wrapText(ctx, s.label || `第${i + 1}场`, labelW, 1)[0] ?? '', x, y);
 
-    ctx.fillStyle = MUTED;
-    ctx.font = px(22, 400);
+    ctx.fillStyle = pal.muted;
+    ctx.font = px(timeSize, 400);
     ctx.textAlign = 'right';
     const day = dayKey(s.startAt) === firstDay ? '' : `${shortDay(s.startAt)} `;
     ctx.fillText(`${day}${timeOf(s.startAt)} – ${timeOf(s.endAt)}`, x + cellW, y);
   });
   ctx.textAlign = 'left';
+  return { hidden, rowH, neededH };
 }
 
-/** 三档价格用不同配色区分：活动价中性、VIP 玫红、SVIP 金色 */
-const PRICE_TONES: Record<'PUBLIC' | 'VIP' | 'SVIP', {
-  fill: string;
-  stroke: string;
-  label: string;
-  amount: string;
-}> = {
-  PUBLIC: {
-    fill: 'rgba(255,255,255,0.08)',
-    stroke: 'rgba(255,255,255,0.14)',
-    label: 'rgba(255,255,255,0.62)',
-    amount: WHITE,
-  },
-  VIP: {
-    fill: 'rgba(244,63,94,0.16)',
-    stroke: 'rgba(244,63,94,0.55)',
-    label: '#fda4af',
-    amount: '#ffe4e6',
-  },
-  SVIP: {
-    fill: 'rgba(216,180,90,0.16)',
-    stroke: 'rgba(216,180,90,0.55)',
-    label: '#e8cf92',
-    amount: '#f8e7bd',
-  },
-};
-
+/**
+ * 三档价格用不同配色区分：活动价中性、VIP 用主题主色、SVIP 用主色偏金的变体。
+ *
+ * 配色由 `paletteOf()` 从主题三色派生（见 PosterPalette.price），
+ * 这里不再写死色值——否则换配色后价格卡还是玫红/金，和整张海报不搭。
+ */
 function drawPricesBlock(
   ctx: CanvasRenderingContext2D,
   block: PosterBlockDto,
   event: EventDto,
+  pal: PosterPalette,
 ): void {
   const priceOf = (level: 'PUBLIC' | 'VIP' | 'SVIP'): number =>
     event.prices.find((p) => p.level === level)?.priceCent ?? event.feeCent;
@@ -685,7 +891,7 @@ function drawPricesBlock(
   const boxH = Math.min(block.h, 88);
 
   items.forEach((item, i) => {
-    const tone = PRICE_TONES[item.level];
+    const tone = pal.price[item.level];
     const x = block.x + i * (boxW + gap);
     roundRect(ctx, x, block.y, boxW, boxH, 14);
     ctx.fillStyle = tone.fill;
@@ -706,19 +912,19 @@ function drawPricesBlock(
   ctx.textAlign = 'left';
 }
 
-function drawFooterBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): void {
+function drawFooterBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
   const text = (block.text ?? '').trim() || '猫爪摄影会 · 名额有限，扫码锁定你的场次';
   const align = (block.align ?? 'left') as CanvasTextAlign;
   const ax = align === 'center' ? block.x + block.w / 2 : align === 'right' ? block.x + block.w : block.x;
 
   ctx.textAlign = align;
-  ctx.fillStyle = block.color || FAINT;
+  ctx.fillStyle = block.color || pal.faint;
   ctx.font = px(block.fontSize ?? 21, 400);
   ctx.fillText(wrapText(ctx, text, block.w, 1)[0] ?? '', ax, block.y + 24);
   ctx.textAlign = 'left';
 }
 
-function drawTextBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): void {
+function drawTextBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
   const text = (block.text ?? '').trim();
   if (!text) return;
   const align = (block.align ?? 'left') as CanvasTextAlign;
@@ -726,13 +932,13 @@ function drawTextBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): vo
 
   const size = block.fontSize ?? 30;
   ctx.font = px(size, 600);
-  ctx.fillStyle = block.color || WHITE;
+  ctx.fillStyle = block.color || pal.text;
   ctx.textAlign = align;
   const lineHeight = Math.round(size * 1.34);
   const maxLines = Math.max(1, Math.floor(block.h / lineHeight));
   const lines = wrapText(ctx, text, block.w, maxLines);
 
-  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowColor = pal.textShadow;
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 3;
   lines.forEach((line, i) => {
@@ -744,16 +950,22 @@ function drawTextBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto): vo
   ctx.textAlign = 'left';
 }
 
-/** 二维码卡片：白底圆角 + 二维码 + 底部说明；未配置时画虚线占位 */
+/**
+ * 二维码卡片：白底圆角 + 二维码 + 底部说明；未配置时画虚线占位。
+ *
+ * 卡片**始终白底**、说明始终深色，不跟随主题：二维码必须留足黑白对比才能被扫出来，
+ * 浅色主题下这张白卡也正好成为画面里唯一的「纸片」，反而更好看。
+ */
 function drawQrBlock(
   ctx: CanvasRenderingContext2D,
   block: PosterBlockDto,
   img: HTMLImageElement | null,
+  pal: PosterPalette,
 ): void {
   const { x, y, w, h } = block;
 
   ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowColor = pal.blockShadow;
   ctx.shadowBlur = 28;
   ctx.shadowOffsetY = 8;
   roundRect(ctx, x, y, w, h, 24);
@@ -811,14 +1023,22 @@ export interface PosterRenderInput {
   /** 左上角品牌标题；null 用内置默认 */
   brandTitle: string | null;
   /**
-   * 渲染诊断回调：报告本次**实际被跳过**的区块 id。
+   * 渲染诊断回调：报告本次**实际被跳过**的区块 id，以及**内容被压缩**的区块。
    *
    * 设计器需要它来对齐「点击层」与「画面」：某些区块（第二模特图 / 第二模特服装）
    * 会因为「本场只有一位模特」或「图片加载失败」而不绘制，
    * 如果热区仍然保留，就会变成一层透明的点击拦截器。
+   *
+   * `overflow` 是另一类问题：区块画出来了，但内容放不下（典型是场次安排
+   * 高度不足导致时段被省略）。设计器据此给出「拉高到 N px」的一键修复，
+   * 而不是让用户对着一张少了两场的海报猜原因。
    * 导出路不用关心这个回调，传了也无副作用。
    */
-  onDiagnostics?: (info: { skippedIds: string[]; hasSecondModel: boolean }) => void;
+  onDiagnostics?: (info: {
+    skippedIds: string[];
+    hasSecondModel: boolean;
+    overflow: Array<{ id: string; hidden: number; neededH: number }>;
+  }) => void;
 }
 
 /** 按区块布局渲染到 canvas；返回 canvas 供下载或预览复用 */
@@ -870,8 +1090,15 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
   const hasProxy = Boolean(event.allowProxyShoot
     || (event.sessions ?? []).some((s) => s.kind === 'PROXY'));
 
-  // 画布底色：区块之间若有缝隙，露出的是这层深色而不是透明
-  ctx.fillStyle = INFO_BG;
+  /**
+   * 主题调色板：用户只选底色 / 主色 / 正文色三个值，
+   * 其余（次级文字、价格三档、蒙层、描边、阴影）全部派生。
+   * 旧版式没有 theme 字段 → 回退「曜黑」，与上线前观感一致。
+   */
+  const pal = paletteOf(layout.theme);
+
+  // 画布底色：区块之间若有缝隙，露出的是这层主题底色而不是透明
+  ctx.fillStyle = pal.bg;
   ctx.fillRect(0, 0, W, H);
 
   /** 区块类型 → 图片资源 */
@@ -895,6 +1122,8 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
 
   /** 本次真正没有绘制的区块 id（供设计器对齐点击层） */
   const skippedIds: string[] = [];
+  /** 画出来了但内容放不下的区块（供设计器给出一键拉高） */
+  const overflow: Array<{ id: string; hidden: number; neededH: number }> = [];
 
   for (const block of blocks) {
     /**
@@ -947,7 +1176,7 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
               : '模特照片';
         // 主图区贴边时不加圆角投影，避免边缘出现一圈黑线
         if (block.type === 'stage' && img && (block.fit ?? 'contain') === 'contain') {
-          frameBlock(ctx, block);
+          frameBlock(ctx, block, pal);
         }
         /**
          * 服装角标带模特名：双模特场次有两张「当日服装」，
@@ -958,36 +1187,40 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
         const tag = baseTag && baseTag !== '场地照片' && modelName && (event.models?.length ?? 0) > 1
           ? `${baseTag} · ${modelName}`
           : baseTag;
-        drawImageBlock(ctx, img, block, placeholder, tag);
+        drawImageBlock(ctx, img, block, pal, placeholder, tag);
         break;
       }
       case 'qr':
       case 'qrSite':
-        drawQrBlock(ctx, block, img);
+        drawQrBlock(ctx, block, img, pal);
         break;
       case 'brand':
-        drawBrandBlock(ctx, block, brandTitle);
+        drawBrandBlock(ctx, block, brandTitle, pal);
         break;
       case 'title':
-        drawTitleIn(ctx, block, event.title || '猫爪社摄影会', align);
+        drawTitleIn(ctx, block, event.title || '猫爪社摄影会', align, pal);
         break;
       case 'intro':
-        drawIntroBlock(ctx, block, event);
+        drawIntroBlock(ctx, block, event, pal);
         break;
       case 'divider':
-        drawDividerBlock(ctx, block);
+        drawDividerBlock(ctx, block, pal);
         break;
-      case 'sessions':
-        drawSessionsBlock(ctx, block, event.sessions ?? [], hasProxy);
+      case 'sessions': {
+        const layoutInfo = drawSessionsBlock(ctx, block, event.sessions ?? [], hasProxy, event.ratioLabel ?? null, pal);
+        if (layoutInfo.hidden > 0) {
+          overflow.push({ id: block.id, hidden: layoutInfo.hidden, neededH: layoutInfo.neededH });
+        }
         break;
+      }
       case 'prices':
-        drawPricesBlock(ctx, block, event);
+        drawPricesBlock(ctx, block, event, pal);
         break;
       case 'footer':
-        drawFooterBlock(ctx, block);
+        drawFooterBlock(ctx, block, pal);
         break;
       case 'text':
-        drawTextBlock(ctx, block);
+        drawTextBlock(ctx, block, pal);
         break;
       default:
         break;
@@ -997,7 +1230,7 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
   }
 
   // 报告本次实际跳过的区块，供设计器让「点击层」与画面保持一致
-  input.onDiagnostics?.({ skippedIds, hasSecondModel });
+  input.onDiagnostics?.({ skippedIds, hasSecondModel, overflow });
 
   return canvas;
 }

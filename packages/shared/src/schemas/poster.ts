@@ -50,7 +50,7 @@ export const POSTER_BLOCK_META: Readonly<
   brand: { label: '品牌标题', hint: '左上角站点名，未配置时用内置默认文案' },
   title: { label: '活动标题', hint: '自动缩放字号，优先在 · 、／ 等分隔符处断行' },
   intro: { label: '副标题 / 场地', hint: '副标题 + 「模特 · 场地 · 场景」一行' },
-  sessions: { label: '场次安排', hint: '时段双列排布，高度不够时自动减少行数' },
+  sessions: { label: '场次安排', hint: '时段双列排布；高度不足时行高自动压缩，仍放不下会提示缺几场并可一键拉高' },
   prices: { label: '价格三档', hint: '活动价 / VIP 价 / SVIP 价' },
   wardrobe: { label: '当日服装图', hint: '报名关键信息，默认完整显示不裁切' },
   wardrobe2: { label: '第二模特服装', hint: '双模特场次的第二位模特穿什么；单模特时自动跳过' },
@@ -104,10 +104,105 @@ export const posterBlockSchema = z
 
 export type PosterBlockDto = z.infer<typeof posterBlockSchema>;
 
+/* ---------------- 配色主题 ---------------- */
+
+/**
+ * 海报配色。
+ *
+ * 只存三个色：底色 / 主色（强调色）/ 正文色。次要文字、价格档位、
+ * 图片蒙层与描边全部由渲染器从这三个色**派生**——否则每加一套配色
+ * 都要手填十几个色值，且很容易出现「浅色底 + 白字」这种看不见的组合。
+ *
+ * 旧版式没有 theme 字段（schema 填 null），渲染时回退到「曜黑」，
+ * 与主题功能上线前的观感完全一致。
+ */
+export const posterThemeSchema = z
+  .object({
+    /** 画布底色：区块之间的缝隙露出这层 */
+    bg: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, '底色须为 6 位十六进制，如 #080a0e'),
+    /** 主色（强调色）：品牌竖条 / 分隔线 / VIP 价 / 人数比 / 图片角标 */
+    accent: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, '主色须为 6 位十六进制，如 #f43f5e'),
+    /** 正文色：标题与时段名；浅色底请选深色，否则看不清 */
+    text: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, '正文色须为 6 位十六进制，如 #ffffff'),
+  })
+  .strict();
+
+export type PosterThemeDto = z.infer<typeof posterThemeSchema>;
+
+export const POSTER_THEMES = [
+  'midnight',
+  'ink',
+  'porcelain',
+  'forest',
+  'violet',
+  'ocean',
+] as const;
+
+export type PosterThemeKey = (typeof POSTER_THEMES)[number];
+
+/** 预设配色：设计器色卡直接用，避免两处维护色值 */
+export const POSTER_THEME_PRESETS: Readonly<
+  Record<PosterThemeKey, { label: string; hint: string } & PosterThemeDto>
+> = {
+  midnight: {
+    label: '曜黑玫红',
+    hint: '默认配色，深色底 + 玫红强调，与站内品牌色一致',
+    bg: '#080a0e',
+    accent: '#f43f5e',
+    text: '#ffffff',
+  },
+  ink: {
+    label: '墨金',
+    hint: '暖黑底 + 金色强调，适合质感与高级感场次',
+    bg: '#0c0a09',
+    accent: '#d4a537',
+    text: '#faf7f0',
+  },
+  porcelain: {
+    label: '素白朱砂',
+    hint: '浅色底 + 朱砂强调，清爽明亮，适合白天外景',
+    bg: '#f6f4ef',
+    accent: '#dc2626',
+    text: '#1c1917',
+  },
+  forest: {
+    label: '森野',
+    hint: '深绿底 + 嫩绿强调，适合自然光与户外主题',
+    bg: '#071310',
+    accent: '#34d399',
+    text: '#f0fdf4',
+  },
+  violet: {
+    label: '夜紫',
+    hint: '紫黑底 + 亮紫强调，适合夜场与赛博主题',
+    bg: '#0d0a1a',
+    accent: '#a78bfa',
+    text: '#f5f3ff',
+  },
+  ocean: {
+    label: '海蓝',
+    hint: '深蓝底 + 天蓝强调，冷静克制，适合棚拍科技景',
+    bg: '#061019',
+    accent: '#38bdf8',
+    text: '#f0f9ff',
+  },
+};
+
+/** 取某套预设配色（返回独立副本，可安全改） */
+export function posterThemeOf(key: PosterThemeKey): PosterThemeDto {
+  const t = POSTER_THEME_PRESETS[key] ?? POSTER_THEME_PRESETS.midnight;
+  return { bg: t.bg, accent: t.accent, text: t.text };
+}
+
+/** 未指定主题时的回退：与主题功能上线前的观感一致 */
+export const DEFAULT_POSTER_THEME: PosterThemeDto = posterThemeOf('midnight');
+
 export const posterLayoutSchema = z
   .object({
     /** 版式版本：将来若坐标体系变化，用它做迁移判定 */
     version: z.literal(1).default(1),
+    /** 配色主题；null / 缺省 = 曜黑（旧版式无此字段也能正常解析） */
+    theme: posterThemeSchema.nullable().default(null),
     blocks: z.array(posterBlockSchema).min(1).max(40),
   })
   .strict();
@@ -163,6 +258,7 @@ function mk(
  */
 const CLASSIC: PosterLayoutDto = {
   version: 1,
+  theme: null,
   blocks: [
     mk('stage', 0, 0, 672, 860, { z: 0, fit: 'contain', modelIndex: 0 }),
     mk('wardrobe', 672, 72, 336, 420, { z: 5, fit: 'contain', modelIndex: 0 }),
@@ -185,6 +281,7 @@ const CLASSIC: PosterLayoutDto = {
 /** 双人版：两张模特图并置，服装/场地挪到文案区右侧竖排 */
 const DUO: PosterLayoutDto = {
   version: 1,
+  theme: null,
   blocks: [
     mk('stage', 0, 0, 540, 820, { z: 0, fit: 'cover', modelIndex: 0 }),
     mk('stage2', 540, 0, 540, 820, { z: 1, fit: 'cover', modelIndex: 1 }),
@@ -195,8 +292,13 @@ const DUO: PosterLayoutDto = {
     mk('title', 72, 880, 540, 180),
     mk('intro', 72, 1072, 540, 78),
     mk('divider', 72, 1164, 540, 8, { z: 6 }),
-    mk('sessions', 72, 1184, 540, 160),
-    mk('prices', 72, 1356, 540, 96),
+    /**
+     * 场次区块高度 192（原 160）：三场需要两行 × 40px + 标题 40px = 120px，
+     * 160 只够两行却算成「只能画 2 个时段」，第三场会被丢掉（用户 2026-11-17 实测）。
+     * 与经典版同为 192，四场也能完整排下。
+     */
+    mk('sessions', 72, 1184, 540, 192),
+    mk('prices', 72, 1392, 540, 96),
     mk('footer', 72, 1548, 640, 44),
     mk('brand', 72, 72, 760, 60, { z: 12 }),
     mk('qr', 744, 1270, 264, 318, { z: 12 }),
@@ -207,13 +309,15 @@ const DUO: PosterLayoutDto = {
 /** 通栏版：主视觉整幅铺满顶部，文案更紧凑 */
 const COMPACT: PosterLayoutDto = {
   version: 1,
+  theme: null,
   blocks: [
     mk('stage', 0, 0, 1080, 880, { z: 0, fit: 'cover' }),
     mk('title', 72, 900, 660, 180),
     mk('intro', 72, 1092, 660, 78),
     mk('divider', 72, 1184, 660, 8, { z: 6 }),
-    mk('sessions', 72, 1204, 660, 140),
-    mk('prices', 72, 1330, 660, 96),
+    // 192 与另两套一致：三/四场都能完整排下，价格顺移到 1408（页脚 1548 前留足间距）
+    mk('sessions', 72, 1204, 660, 192),
+    mk('prices', 72, 1408, 660, 96),
     mk('wardrobe', 672, 900, 336, 190, { z: 5, fit: 'cover' }),
     mk('venue', 672, 1106, 336, 140, { z: 5, fit: 'cover' }),
     mk('footer', 72, 1548, 640, 44),
@@ -231,13 +335,27 @@ const PRESETS: Readonly<Record<'classic' | 'duo' | 'compact', PosterLayoutDto>> 
 
 export type PosterPresetKey = keyof typeof PRESETS;
 
-/** 深拷贝：设计器会就地改区块，必须给每个调用方一份独立副本 */
-export function posterPresetOf(key: PosterPresetKey): PosterLayoutDto {
+/**
+ * 深拷贝：设计器会就地改区块，必须给每个调用方一份独立副本。
+ *
+ * 刻意**保留当前主题**：换版式（经典 / 双人 / 通栏）是换排版，
+ * 不该把用户已经选好的配色一并冲掉。
+ */
+export function posterPresetOf(key: PosterPresetKey, theme: PosterThemeDto | null = null): PosterLayoutDto {
   const preset = PRESETS[key] ?? CLASSIC;
-  return { version: 1, blocks: preset.blocks.map((b) => ({ ...b })) };
+  return {
+    version: 1,
+    theme: theme ? { ...theme } : null,
+    blocks: preset.blocks.map((b) => ({ ...b })),
+  };
 }
 
-/** 新增自定义文字区块时的初始值：放在文案区中部，样式克制 */
+/**
+ * 新增自定义文字区块时的初始值：放在文案区中部，样式克制。
+ *
+ * `color` 留 null = 跟随主题正文色。以前写死 '#ffffff'，
+ * 切到浅色配色后这段字就变成白底白字，看不见。
+ */
 export function newTextBlock(id: string): PosterBlockDto {
   return mk('text', 72, 1330, 528, 48, {
     id,
@@ -245,7 +363,7 @@ export function newTextBlock(id: string): PosterBlockDto {
     text: '在这里写一句宣传语',
     fontSize: 30,
     align: 'left',
-    color: '#ffffff',
+    color: null,
   });
 }
 
