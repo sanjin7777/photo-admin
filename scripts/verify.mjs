@@ -546,6 +546,12 @@ assert.ok(adminModuleSrc.includes('hashPassword'), '临时密码须经 bcrypt �
 const membersView = read('apps/admin/src/views/MembersView.vue');
 assert.ok(membersView.includes("session.can('admin:user:reset-password')"), '用户列表重置密码按钮须按能力显示');
 assert.ok(membersView.includes('temporaryPassword'), '临时密码须一次性展示');
+// 弹窗写「XXX 的临时密码」时要显示人名，只有账号串认不出是谁
+assert.ok(adminModuleSrc.includes("SELECT id, nickname FROM users WHERE wechat_id = ?")
+  || adminModuleSrc.includes("sendOk(res, { wechatId: p.wechatId, nickname, temporaryPassword })"),
+  '重置密码须回传昵称，弹窗要显示人名');
+assert.ok(membersView.includes('personLabel(resetResult.nickname, resetResult.wechatId)'),
+  '临时密码弹窗须以昵称显示被打码的账号');
 
 // 运营/财务进概览、模特管理不再 3001：特权接口按能力调用
 const dashSrc = read('apps/admin/src/views/DashboardView.vue');
@@ -1967,4 +1973,113 @@ assert.ok(packPy.includes("m.name.startswith(TOP + '/')"), '自检须校验所�
 assert.ok(packPy.includes("elif info.name.endswith('.sh')"), '脚本须保留 .sh 可执行位');
 assert.ok(packPy.includes('info.mode = 0o755'), '目录与脚本须为 0755');
 
-console.log(`VERIFY_OK: 51 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
+/* ---------- 第 52 组：只给账号串认不出人，全站须同时下发并显示昵称 ---------- */
+// 运营反馈：报名管理「用户」列只有 c1021522802 / symj_sunshine_young 这类自起的微信号，
+// 想确认「这是谁」得去会员管理再搜一次。凡是展示用户的地方，昵称必须和微信号一起到手。
+const nickDomainSrc = read('packages/shared/src/types/domain.ts');
+assert.ok(nickDomainSrc.includes('userNickname: string | null'), '报名 DTO 须带报名人昵称');
+assert.ok(nickDomainSrc.includes('accountNickname: string | null'), '积分流水 DTO 须带账户昵称');
+assert.ok(nickDomainSrc.includes('actorNickname: string | null'), '审计日志 DTO 须带操作人昵称');
+assert.ok(nickDomainSrc.includes('createdByNickname') && nickDomainSrc.includes('usedByNickname'),
+  '邀请码 DTO 须带生成人与使用人昵称');
+assert.ok(nickDomainSrc.includes('targetNickname'), '权限日志 DTO 须带被操作对象昵称');
+assert.ok(nickDomainSrc.includes('boundNickname'), '模特档案 DTO 须带绑定账号昵称');
+
+// 服务端：五张列表的 SQL 都要 join users 把昵称取回来，光有 wechat_id 不够
+assert.ok(regModuleSrc.includes('u.nickname AS user_nickname'), '报名列表须 join 出昵称');
+assert.ok(regModuleSrc.includes('u.nickname LIKE ?'), '报名搜索须能按昵称搜到人');
+const nickBalSrc = read('apps/server/src/modules/balance.module.ts');
+assert.ok(nickBalSrc.includes('u.nickname AS account_nickname'), '积分流水须 join 出昵称');
+assert.ok(nickBalSrc.includes('u.nickname LIKE ?'), '流水搜索须能按昵称搜');
+assert.ok(adminModuleSrc.includes('u.nickname AS actor_nickname'), '审计日志须 join 出操作人昵称');
+assert.ok(adminModuleSrc.includes('t.nickname AS target_nickname'), '权限日志须 join 出被操作人昵称');
+assert.ok(adminModuleSrc.includes('u.nickname LIKE ?'), '审计与权限日志搜索须能按昵称搜');
+const nickInviteSrc = read('apps/server/src/modules/invite-codes.ts');
+assert.ok(nickInviteSrc.includes('creator.nickname AS creator_nickname')
+  && nickInviteSrc.includes('used.nickname AS used_nickname'), '邀请码须 join 出生成人与使用人昵称');
+
+// CSV 导出：只有 user_id 时运营在 Excel 里认不出人，昵称列必须跟着导
+const nickExportBlock = adminModuleSrc.slice(
+  adminModuleSrc.indexOf('const EXPORT_TARGETS'),
+  adminModuleSrc.indexOf('function csvCell'),
+);
+assert.ok(nickExportBlock.includes('user_nickname') && nickExportBlock.includes('actor_nickname')
+  && nickExportBlock.includes('account_nickname') && nickExportBlock.includes('requester_nickname'),
+  '四张导出表都须带昵称列');
+assert.ok(nickExportBlock.includes('LEFT JOIN users'), '导出须 join users 才能拿到昵称');
+// id 列不能因为加了昵称就被删掉：对账还要靠它回库核对
+assert.ok(nickExportBlock.includes("columns: ['id', 'event_id', 'user_id', 'user_nickname'"),
+  '导出加昵称后仍须保留裸 id 列供对账');
+
+// 前端：统一走 personLabel，昵称优先、微信号兜底、最后才是 #id
+const nickLabelsSrc = read('apps/admin/src/utils/labels.ts');
+assert.ok(nickLabelsSrc.includes('export function personLabel'), '须有共用的「昵称（微信号）」拼接函数');
+const personLabelFn = nickLabelsSrc.slice(
+  nickLabelsSrc.indexOf('export function personLabel'),
+  nickLabelsSrc.indexOf('export function', nickLabelsSrc.indexOf('export function personLabel') + 10),
+);
+assert.ok(personLabelFn.includes('withWechat'), '须支持「只显示昵称不带微信号」的窄列场景');
+assert.ok(personLabelFn.includes("'—'"), '昵称与微信号都缺时须显示 — 而不是空白或 null');
+
+// 各视图不得再把裸微信号当主名渲染
+for (const [file, needles] of [
+  ['apps/admin/src/views/RegistrationsView.vue', ['personLabel(r.userNickname, r.userWechatId']],
+  ['apps/admin/src/views/FinanceView.vue', ['personLabel(t.accountNickname, t.accountWechatId', 'personLabel(r.requesterNickname, r.requesterWechatId']],
+  ['apps/admin/src/views/CockpitView.vue', ['personLabel(r.userNickname, r.userWechatId', 'personLabel(r.requesterNickname, r.requesterWechatId']],
+  ['apps/admin/src/views/GovernanceView.vue', ['personLabel(l.actorNickname, l.actorWechatId', 'personLabel(p.targetNickname, p.targetWechatId']],
+  ['apps/admin/src/views/InviteCodesView.vue', ['personLabel(c.createdByNickname', 'personLabel(c.usedByNickname']],
+  ['apps/admin/src/views/CouponsView.vue', ['personLabel(String(row.userNickname ?? \'\')']],
+  ['apps/admin/src/views/ModelsView.vue', ['personLabel(m.boundNickname, m.boundWechatId']],
+  ['apps/admin/src/views/EventsView.vue', ['personLabel(r.userNickname, r.userWechatId']],
+  ['apps/admin/src/components/UserPicker.vue', ['personLabel(o.nickname, o.wechatId']],
+]) {
+  const src = read(file);
+  assert.ok(src.includes('personLabel'), `${file} 须用 personLabel 拼用户显示名`);
+  for (const needle of needles) assert.ok(src.includes(needle), `${file} 须把昵称作为主名（缺 ${needle}）`);
+  assert.ok(src.includes("from '../utils/labels'"), `${file} 须从 utils/labels 引入 personLabel`);
+}
+
+// Mock 层：dev:admin:mock 下也要能看到昵称，否则本地联调重现不了线上问题
+const nickMockSrc = read('mock/index.ts');
+assert.ok(nickMockSrc.includes('createdByNickname') && nickMockSrc.includes('usedByNickname'),
+  'Mock 邀请码须带生成人与使用人昵称');
+assert.ok(nickMockSrc.includes('actorNickname') && nickMockSrc.includes('targetNickname'),
+  'Mock 审计与权限日志须带操作人昵称');
+assert.ok(nickMockSrc.includes('accountNickname'), 'Mock 积分流水须带账户昵称');
+
+/*
+ * 昵称必显（第二批）：审计日志的「对象」列、会员管理列序、导入凭证与失败明细、
+ * 以及登录/改密页的「当前账号」，凡是只给账号串或 #id 的地方都要有名字。
+ */
+assert.ok(adminModuleSrc.includes("tu.nickname AS target_nickname") && adminModuleSrc.includes("a.target_type = 'user'"),
+  '审计日志须在 targetType=user 时 join 出被操作对象昵称（其它实体无法统一 join，保持 #id）');
+assert.ok(nickDomainSrc.includes('targetNickname: string | null'),
+  'AuditLogDto 须带 targetNickname（权限日志继承同一字段）');
+
+const nickMembersSrc = read('apps/admin/src/views/MembersView.vue');
+assert.ok(nickMembersSrc.includes('personLabel(c.nickname, c.wechatId)'),
+  '导入凭证清单须显示「昵称（微信号）」而不是裸账号串');
+assert.ok(nickMembersSrc.includes('personLabel(e.nickname, e.wechatId)'),
+  '导入失败明细须显示昵称');
+assert.ok(nickMembersSrc.includes("{{ u.nickname || '—' }}"),
+  '会员管理主表须以昵称为主名');
+assert.ok(
+  nickMembersSrc.indexOf("{{ u.nickname || '—' }}") < nickMembersSrc.indexOf('{{ u.wechatId }}</td>'),
+  '会员管理主表昵称列须排在微信号列之前',
+);
+
+const nickImportSrc = read('apps/server/src/modules/member-import.ts');
+assert.ok(nickImportSrc.includes('nickname: r.nickname || null'),
+  '导入凭证与失败明细都要回传昵称，否则运营只能看到账号串');
+const nickImportsTypeSrc = read('packages/shared/src/types/imports.ts');
+assert.ok(nickImportsTypeSrc.includes('nickname: string | null'),
+  'MemberImportCredentialDto 与 MemberImportErrorDto 须带 nickname');
+
+assert.ok(read('apps/web/src/views/ChangePasswordView.vue').includes('session.user?.nickname || session.user?.wechatId'),
+  '前台改密页「当前账号」须昵称优先');
+assert.ok(read('apps/admin/src/views/ForbiddenView.vue').includes('session.user.nickname || session.user.wechatId'),
+  '后台 403 页「当前账号」须昵称优先');
+assert.ok(read('apps/admin/src/views/GovernanceView.vue').includes('l.targetNickname || l.targetWechatId'),
+  '审计日志「对象」列有昵称时须显示昵称，缺才退化成 #id');
+
+console.log(`VERIFY_OK: 52 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页/昵称必显；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);

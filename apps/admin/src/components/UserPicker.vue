@@ -6,7 +6,7 @@
 import { computed, onMounted, ref } from 'vue';
 import type { AdminUserOptionDto } from '@photo/shared';
 import { api } from '../api';
-import { MEMBER_LEVEL, metaOf } from '../utils/labels';
+import { MEMBER_LEVEL, metaOf, personLabel } from '../utils/labels';
 
 const props = withDefaults(defineProps<{
   modelValue: string | string[];
@@ -81,11 +81,11 @@ function onChange(value: string | string[]): void {
       v-for="o in displayOptions"
       :key="o.wechatId"
       :value="o.wechatId"
-      :label="`${o.wechatId}（${o.nickname}）`"
+      :label="personLabel(o.nickname, o.wechatId)"
     >
       <span class="flex items-center gap-2">
-        <span>{{ o.wechatId }}</span>
-        <span class="text-xs text-slate-500">{{ o.nickname }}</span>
+        <span>{{ o.nickname || o.wechatId }}</span>
+        <span class="text-xs text-slate-500">{{ o.wechatId }}</span>
         <span class="rounded-full px-1.5 py-0.5 text-[11px]" :class="metaOf(MEMBER_LEVEL, o.level).cls">
           {{ metaOf(MEMBER_LEVEL, o.level).label }}
         </span>

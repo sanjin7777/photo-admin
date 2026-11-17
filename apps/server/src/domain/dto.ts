@@ -59,6 +59,8 @@ export interface RegistrationRow extends RowDataPacket {
   cancel_reason: string | null; created_at: string; updated_at: string;
   /** 后台列表 join users 回填 */
   user_wechat_id?: string | null;
+  /** 后台列表 join users 回填的昵称（与微信号一起展示，光有账号串认不出人） */
+  user_nickname?: string | null;
   /** 列表 join events / event_sessions 回填的展示字段 */
   event_title?: string | null;
   session_label?: string | null;
@@ -219,6 +221,7 @@ export function registrationDtoOf(
     session: session ?? joinedSessionDtoOf(r),
     userId: String(r.user_id),
     userWechatId: r.user_wechat_id ? String(r.user_wechat_id) : null,
+    userNickname: r.user_nickname ? String(r.user_nickname) : null,
     eventTitle: r.event_title ?? event?.title ?? null,
     sessionLabel: r.session_label ?? session?.label ?? null,
     sessionStartAt: r.session_start_at ? iso(r.session_start_at) : session?.startAt ?? null,
@@ -307,6 +310,7 @@ export function modelDtoOf(r: RowDataPacket, includeBody = false): ModelProfileD
     // 纯资料模特没有登录账号
     userId: r.user_id == null ? null : String(r.user_id),
     boundWechatId: r.bound_wechat_id == null ? null : String(r.bound_wechat_id),
+    boundNickname: r.bound_nickname == null ? null : String(r.bound_nickname),
     stageName: r.stage_name,
     heightCm: includeBody && r.height_cm != null ? Number(r.height_cm) : null,
     measurements: includeBody ? measurementsOf(r.measurements_json) : null,
@@ -352,6 +356,7 @@ export function balanceTxnDtoOf(r: RowDataPacket): BalanceTransactionDto {
   return {
     id: String(r.id), accountUserId: String(r.account_user_id),
     accountWechatId: r.account_wechat_id ? String(r.account_wechat_id) : null,
+    accountNickname: r.account_nickname ? String(r.account_nickname) : null,
     direction: r.direction,
     amountCent: Number(r.amount_cent), balanceAfterCent: Number(r.balance_after_cent),
     bizType: r.biz_type, bizId: String(r.biz_id),
@@ -418,8 +423,12 @@ export function auditDtoOf(r: RowDataPacket): AuditLogDto {
   return {
     id: String(r.id), actorId: r.actor_id ? String(r.actor_id) : null,
     actorWechatId: r.actor_wechat_id ?? null,
+    actorNickname: r.actor_nickname ?? null,
     action: r.action, targetType: r.target_type,
     targetId: r.target_id ? String(r.target_id) : null,
+    // 只有 targetType==='user' 时服务端才 join 得出对方昵称；其它实体保持 null
+    targetWechatId: r.target_wechat_id ?? null,
+    targetNickname: r.target_nickname ?? null,
     before: r.before_json ?? null, after: r.after_json ?? null,
     ip: r.ip ?? null, ua: r.ua ?? null, traceId: r.trace_id, createdAt: iso(r.created_at),
   };

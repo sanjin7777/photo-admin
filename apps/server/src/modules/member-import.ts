@@ -379,7 +379,7 @@ export function mountMemberImport(app: Express): void {
 
       // 重新查重（preview 与 commit 之间库可能已变化）
       const existing = await existingUsers(importable.map((r) => r.wechatId));
-      const errors: Array<{ row: number; wechatId: string; reason: string }> = [];
+      const errors: Array<{ row: number; wechatId: string; nickname: string | null; reason: string }> = [];
       const temporaryPassword = newImportPassword();
       const passwordHash = await hashPassword(temporaryPassword);
       const credentials: MemberImportCredentialDto[] = [];
@@ -412,7 +412,7 @@ export function mountMemberImport(app: Express): void {
         const newId = String(result.insertId);
         await updateMembershipAndBalance(conn, newId, r, actorId, sqlNow);
         // 会员/余额写入成功后才登记凭证，宽松模式下失败行不会误导运营
-        credentials.push({ wechatId: r.wechatId, temporaryPassword });
+        credentials.push({ wechatId: r.wechatId, nickname: r.nickname || null, temporaryPassword });
         created += 1;
       };
 
@@ -435,7 +435,7 @@ export function mountMemberImport(app: Express): void {
             await withTransaction(async (conn) => applyRow(conn, r));
           } catch (error: unknown) {
             const reason = error instanceof Error ? error.message : '写入失败';
-            errors.push({ row: r.row, wechatId: r.wechatId, reason });
+            errors.push({ row: r.row, wechatId: r.wechatId, nickname: r.nickname || null, reason });
           }
         }
       }

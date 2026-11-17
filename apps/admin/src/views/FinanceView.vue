@@ -9,7 +9,7 @@ import { balanceAdjustmentSchema, labelOf, pointsToCent, BALANCE_BIZ_TYPES } fro
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import { useSessionStore } from '../stores/session';
-import { REFUND_STATUS, TXN_DIRECTION, metaOf, points, shortTime } from '../utils/labels';
+import { REFUND_STATUS, TXN_DIRECTION, metaOf, personLabel, points, shortTime } from '../utils/labels';
 import { emptyPage } from '../utils/loadAll';
 import UserPicker from '../components/UserPicker.vue';
 import AppPagination from '../components/AppPagination.vue';
@@ -225,7 +225,7 @@ const settling = ref('');
 async function settle(order: RefundOrderDto): Promise<void> {
   try {
     await ui.confirm(
-      `确认已向「${order.requesterWechatId ?? `用户 #${order.requestedBy}`}」线下退款 ${points(order.amountCent)}？登记后计入资金落定，仅用于对账留痕。`,
+      `确认已向「${personLabel(order.requesterNickname, order.requesterWechatId, order.requestedBy)}」线下退款 ${points(order.amountCent)}？登记后计入资金落定，仅用于对账留痕。`,
       '登记线下退款完成',
     );
   } catch { return; }
@@ -334,8 +334,8 @@ async function submitAdjust(): Promise<void> {
               <tr v-for="r in visibleRefunds" :key="r.id" class="border-t border-slate-100 hover:bg-slate-50/60">
                 <td class="px-3 py-2.5 font-medium text-slate-900">#{{ r.id }}</td>
                 <td class="px-3 py-2.5">
-                  <p class="text-slate-800">{{ r.requesterWechatId ?? `用户 #${r.requestedBy}` }}</p>
-                  <p v-if="r.requesterNickname" class="text-xs text-slate-500">{{ r.requesterNickname }}</p>
+                  <p class="text-slate-800">{{ personLabel(r.requesterNickname, r.requesterWechatId, r.requestedBy, { withWechat: false }) }}</p>
+                  <p class="text-xs text-slate-500">{{ r.requesterWechatId ? `微信号 ${r.requesterWechatId}` : `用户 #${r.requestedBy}` }}</p>
                 </td>
                 <td class="px-3 py-2.5">
                   <p class="text-slate-800">{{ r.eventTitle ?? (r.eventId ? `场次 #${r.eventId}` : '场次未知') }}</p>
@@ -446,8 +446,8 @@ async function submitAdjust(): Promise<void> {
               <tr v-for="t in visibleTxns" :key="t.id" class="border-t border-slate-100">
                 <td class="px-3 py-2.5 text-slate-500">#{{ t.id }}</td>
                 <td class="px-3 py-2.5">
-                  <p class="font-medium text-slate-800">{{ t.accountWechatId ?? `#${t.accountUserId}` }}</p>
-                  <p v-if="t.accountWechatId" class="text-xs text-slate-500">#{{ t.accountUserId }}</p>
+                  <p class="font-medium text-slate-800">{{ personLabel(t.accountNickname, t.accountWechatId, t.accountUserId, { withWechat: false }) }}</p>
+                  <p class="text-xs text-slate-500">{{ t.accountWechatId ? `微信号 ${t.accountWechatId}` : `用户 #${t.accountUserId}` }}</p>
                 </td>
                 <td class="px-3 py-2.5 text-slate-600">{{ labelOf(t.bizType) }}</td>
                 <td class="whitespace-nowrap px-3 py-2.5">
@@ -470,7 +470,7 @@ async function submitAdjust(): Promise<void> {
             <div v-for="t in visibleTxns" :key="t.id" class="flex items-center justify-between p-3">
               <div>
                 <p class="text-sm text-slate-800">{{ labelOf(t.bizType) }}</p>
-                <p class="text-xs text-slate-500">用户 {{ t.accountWechatId ?? `#${t.accountUserId}` }} · {{ shortTime(t.createdAt) }}</p>
+                <p class="text-xs text-slate-500">{{ personLabel(t.accountNickname, t.accountWechatId, t.accountUserId) }} · {{ shortTime(t.createdAt) }}</p>
               </div>
               <span class="text-sm font-medium" :class="t.direction === 'IN' || t.direction === 'UNFREEZE' ? 'text-emerald-600' : 'text-slate-900'">
                 {{ points(t.amountCent) }}

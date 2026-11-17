@@ -10,6 +10,7 @@ import { api } from '../api';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
 import AppPagination from '../components/AppPagination.vue';
 import { useUiStore } from '../stores/ui';
+import { personLabel } from '../utils/labels';
 
 const ui = useUiStore();
 
@@ -56,8 +57,9 @@ const rows = computed(() => list.value.map((c) => ({
   createdByWechatId: c.createdByWechatId,
   usedByWechatId: c.usedByWechatId,
   note: c.note,
-  createdBy: c.createdByWechatId ?? '—',
-  usedBy: c.usedByWechatId ?? '—',
+  // 生成人/使用人一律昵称优先：微信号是用户自起的英文串，运营认不出是谁
+  createdBy: personLabel(c.createdByNickname, c.createdByWechatId),
+  usedBy: personLabel(c.usedByNickname, c.usedByWechatId),
   usedAt: fmt(c.usedAt),
   expiresAt: fmt(c.expiresAt),
   usedAtText: fmt(c.usedAt),
@@ -224,8 +226,8 @@ async function revoke(row: InviteCodeDto): Promise<void> {
             <div class="min-w-0">
               <p class="font-mono text-base font-semibold tracking-widest text-slate-900">{{ row.code }}</p>
               <p class="mt-0.5 text-xs text-slate-600">
-                生成人 {{ row.createdByWechatId ?? '—' }}
-                <span v-if="row.usedByWechatId"> · 使用人 {{ row.usedByWechatId }}</span>
+                生成人 {{ row.createdBy }}
+                <span v-if="row.usedBy !== '—'"> · 使用人 {{ row.usedBy }}</span>
               </p>
               <p class="text-xs text-slate-500">
                 有效期至 {{ row.expiresAtText }}

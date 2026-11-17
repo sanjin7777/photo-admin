@@ -8,7 +8,7 @@ import { adminCreateUserSchema, ASSIGNABLE_BACKEND_ROLES, BACKEND_ROLE_META, lab
 import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import { useSessionStore } from '../stores/session';
-import { MEMBER_LEVEL, metaOf, points, shortTime } from '../utils/labels';
+import { MEMBER_LEVEL, metaOf, personLabel, points, shortTime } from '../utils/labels';
 import AppPagination from '../components/AppPagination.vue';
 
 const ui = useUiStore();
@@ -138,7 +138,7 @@ async function doGrant(): Promise<void> {
 
 /* ---------------- 重置密码（仅管理员与运维账号） ---------------- */
 const resettingId = ref<string | null>(null);
-const resetResult = ref<{ wechatId: string; temporaryPassword: string } | null>(null);
+const resetResult = ref<{ wechatId: string; nickname: string | null; temporaryPassword: string } | null>(null);
 
 /** 运维账号由系统保护，服务端也会拒绝；前端直接不展示按钮 */
 const canResetPassword = (u: AdminUserListItemDto): boolean =>
@@ -147,7 +147,7 @@ const canResetPassword = (u: AdminUserListItemDto): boolean =>
 async function resetPassword(u: AdminUserListItemDto): Promise<void> {
   try {
     await ui.confirm(
-      `重置「${u.wechatId}」的密码？原密码立即失效，旧会话会被登出，并生成一次性展示的临时密码。`,
+      `重置「${personLabel(u.nickname, u.wechatId, u.id)}」的密码？原密码立即失效，旧会话会被登出，并生成一次性展示的临时密码。`,
       '重置密码',
     );
   } catch {
@@ -428,8 +428,8 @@ async function downloadTemplate(): Promise<void> {
       <table class="hidden w-full text-left text-sm md:table">
         <thead class="bg-slate-50 text-xs text-slate-500">
           <tr>
-            <th class="px-3 py-2.5 font-medium">微信号</th>
             <th class="px-3 py-2.5 font-medium">昵称</th>
+            <th class="px-3 py-2.5 font-medium">微信号</th>
             <th class="px-3 py-2.5 font-medium">等级</th>
             <th class="px-3 py-2.5 font-medium">到期</th>
             <th class="px-3 py-2.5 font-medium">积分</th>
@@ -442,11 +442,11 @@ async function downloadTemplate(): Promise<void> {
         </thead>
         <tbody>
           <tr v-for="u in list" :key="u.id" class="border-t border-slate-100 hover:bg-slate-50/60">
-            <td class="px-3 py-2.5 font-medium text-slate-900">{{ u.wechatId }}</td>
-            <td class="px-3 py-2.5 text-slate-600">
-              {{ u.nickname }}
+            <td class="px-3 py-2.5 font-medium text-slate-900">
+              {{ u.nickname || '—' }}
               <span v-if="u.status === 'FROZEN'" class="ml-1 rounded-full bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-600">已冻结</span>
             </td>
+            <td class="px-3 py-2.5 font-mono text-xs text-slate-600">{{ u.wechatId }}</td>
             <td class="px-3 py-2.5">
               <span class="rounded-full px-2 py-0.5 text-xs" :class="metaOf(levelMeta, u.level).cls">
                 {{ metaOf(levelMeta, u.level).label }}
@@ -479,9 +479,9 @@ async function downloadTemplate(): Promise<void> {
         <div v-for="u in list" :key="u.id" class="p-3">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
-              <p class="clamp-1 font-medium text-slate-900">{{ u.wechatId }}</p>
-              <p class="mt-0.5 text-xs text-slate-500">
-                {{ u.nickname }}
+              <p class="clamp-1 font-medium text-slate-900">{{ u.nickname || '—' }}</p>
+              <p class="mt-0.5 font-mono text-xs text-slate-500">
+                {{ u.wechatId }}
                 <span v-if="u.status === 'FROZEN'" class="ml-1 rounded-full bg-rose-50 px-1.5 py-0.5 text-[11px] text-rose-600">已冻结</span>
               </p>
             </div>
@@ -737,8 +737,8 @@ async function downloadTemplate(): Promise<void> {
             <thead class="sticky top-0 bg-slate-50 text-slate-500">
               <tr>
                 <th class="px-3 py-2 font-medium">行</th>
-                <th class="px-3 py-2 font-medium">微信号</th>
                 <th class="px-3 py-2 font-medium">昵称</th>
+                <th class="px-3 py-2 font-medium">微信号</th>
                 <th class="px-3 py-2 font-medium">等级</th>
                 <th class="px-3 py-2 font-medium">有效期</th>
                 <th class="px-3 py-2 font-medium">积分</th>
@@ -751,10 +751,10 @@ async function downloadTemplate(): Promise<void> {
               <tr v-for="r in preview.rows" :key="r.row" class="border-t border-slate-100 align-top">
                 <td class="px-3 py-2 text-slate-500">{{ r.row }}</td>
                 <td class="px-3 py-2 font-medium text-slate-800">
-                  {{ r.wechatId }}
+                  {{ r.nickname || '—' }}
                   <span v-if="r.exists" class="ml-1 rounded bg-slate-100 px-1 text-[11px] text-slate-500">已存在</span>
                 </td>
-                <td class="px-3 py-2 text-slate-600">{{ r.nickname }}</td>
+                <td class="px-3 py-2 font-mono text-slate-600">{{ r.wechatId }}</td>
                 <td class="px-3 py-2 text-slate-600">{{ r.level === 'NONE' ? '—' : r.level }}</td>
                 <td class="px-3 py-2 text-slate-600">{{ r.expireAt ? new Date(r.expireAt).toLocaleDateString('zh-CN') : '—' }}</td>
                 <td class="px-3 py-2 text-slate-600">{{ r.balanceCent == null ? '—' : points(r.balanceCent) }}</td>
@@ -802,7 +802,7 @@ async function downloadTemplate(): Promise<void> {
           <p class="text-xs font-medium text-amber-800">新建账号临时密码（只显示这一次）</p>
           <div class="mt-1 max-h-40 overflow-auto rounded-lg bg-white/70 px-2 py-1.5 font-mono text-xs text-amber-900">
             <p v-for="c in result.credentials" :key="c.wechatId" class="flex justify-between gap-3 py-0.5">
-              <span>{{ c.wechatId }}</span><span>{{ c.temporaryPassword }}</span>
+              <span>{{ personLabel(c.nickname, c.wechatId) }}</span><span>{{ c.temporaryPassword }}</span>
             </p>
           </div>
           <p class="mt-1 text-xs text-amber-700">
@@ -813,7 +813,7 @@ async function downloadTemplate(): Promise<void> {
         <div v-if="result.errors.length" class="rounded-xl border border-rose-200 p-3">
           <p class="mb-1.5 text-sm font-medium text-rose-700">失败明细</p>
           <ul class="space-y-1 text-xs text-slate-600">
-            <li v-for="e in result.errors" :key="`${e.row}-${e.wechatId}`">第 {{ e.row }} 行 · {{ e.wechatId }}：{{ e.reason }}</li>
+            <li v-for="e in result.errors" :key="`${e.row}-${e.wechatId}`">第 {{ e.row }} 行 · {{ personLabel(e.nickname, e.wechatId) }}：{{ e.reason }}</li>
           </ul>
         </div>
       </div>
@@ -832,7 +832,7 @@ async function downloadTemplate(): Promise<void> {
     <!-- 重置密码结果：临时密码只显示这一次 -->
     <el-dialog :model-value="!!resetResult" title="密码已重置" width="min(440px, 94vw)" :close-on-click-modal="false" @close="resetResult = null">
       <div v-if="resetResult" class="rounded-xl border border-amber-200 bg-amber-50 p-3">
-        <p class="text-xs font-medium text-amber-800">「{{ resetResult.wechatId }}」的临时密码（只显示这一次）</p>
+        <p class="text-xs font-medium text-amber-800">「{{ personLabel(resetResult.nickname, resetResult.wechatId) }}」的临时密码（只显示这一次）</p>
         <p class="mt-0.5 font-mono text-base text-amber-900">{{ resetResult.temporaryPassword }}</p>
         <p class="mt-1 text-xs text-amber-700">请通过可靠渠道转告用户，并提醒登录后尽快修改；原密码与旧会话已失效。</p>
       </div>

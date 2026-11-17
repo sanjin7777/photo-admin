@@ -9,7 +9,7 @@ import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import ImageUploader from '../components/ImageUploader.vue';
 import AppPagination from '../components/AppPagination.vue';
-import { VOTE_STATUS, metaOf, shortTime, toLocalInput } from '../utils/labels';
+import { VOTE_STATUS, metaOf, personLabel, shortTime, toLocalInput } from '../utils/labels';
 
 const ui = useUiStore();
 const campaigns = ref<AdminVoteCampaignDto[]>([]);
@@ -567,16 +567,16 @@ async function saveEdit(): Promise<void> {
               <table class="hidden w-full text-left text-sm md:table">
                 <thead class="text-xs text-slate-500">
                   <tr>
+                    <th class="px-2 py-1.5 font-medium">用户</th>
                     <th class="px-2 py-1.5 font-medium">微信号</th>
-                    <th class="px-2 py-1.5 font-medium">昵称</th>
                     <th class="px-2 py-1.5 font-medium">所选方案</th>
                     <th class="px-2 py-1.5 font-medium">投票时间</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="v in visibleVoters" :key="v.userId" class="border-t border-slate-100">
-                    <td class="px-2 py-1.5 text-slate-700">{{ v.wechatId ?? '—' }}</td>
-                    <td class="px-2 py-1.5 text-slate-600">{{ v.nickname ?? '—' }}</td>
+                    <td class="px-2 py-1.5 text-slate-700">{{ personLabel(v.nickname, v.wechatId, v.userId, { withWechat: false }) }}</td>
+                    <td class="px-2 py-1.5 text-slate-500">{{ v.wechatId ?? '—' }}</td>
                     <td class="px-2 py-1.5 text-slate-700">
                       <div class="flex items-center gap-1.5">
                         <div class="relative h-7 w-7 shrink-0 overflow-hidden rounded border border-slate-200 bg-slate-50">
@@ -598,7 +598,7 @@ async function saveEdit(): Promise<void> {
                     <span v-else class="absolute inset-0 flex items-center justify-center text-[11px] text-slate-500">—</span>
                   </div>
                   <div class="min-w-0 flex-1">
-                    <p class="clamp-1 text-sm text-slate-800">{{ v.wechatId ?? '—' }}<span v-if="v.nickname" class="text-xs text-slate-500"> · {{ v.nickname }}</span></p>
+                    <p class="clamp-1 text-sm text-slate-800">{{ personLabel(v.nickname, v.wechatId, v.userId, { withWechat: false }) }}<span v-if="v.wechatId" class="text-xs text-slate-500"> · {{ v.wechatId }}</span></p>
                     <p class="clamp-1 text-xs text-slate-600">投给 {{ v.optionName }}</p>
                   </div>
                   <span class="shrink-0 text-xs text-slate-500">{{ shortTime(v.votedAt) }}</span>

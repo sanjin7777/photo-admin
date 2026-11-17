@@ -1222,7 +1222,7 @@ export function mountEvents(app: Express): void {
   adminModels.get('/', validateQuery(pageQuerySchema), asyncHandler(async (req, res) => {
     const { page, pageSize, offset } = pageArgsOf(req.query as { page?: number; pageSize?: number });
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT mp.*, u.wechat_id AS bound_wechat_id
+      `SELECT mp.*, u.wechat_id AS bound_wechat_id, u.nickname AS bound_nickname
          FROM model_profiles mp
          LEFT JOIN users u ON u.id = mp.user_id AND u.deleted_at IS NULL
         WHERE mp.deleted_at IS NULL

@@ -29,7 +29,10 @@ interface MockInviteCode {
   code: string;
   status: 'UNUSED' | 'USED' | 'REVOKED';
   createdBy: string;
+  /** 生成人昵称：与微信号一起显示，避免列表只剩一个账号串 */
+  createdByNickname: string | null;
   usedByWechatId: string | null;
+  usedByNickname: string | null;
   usedAt: string | null;
   expiresAt: string | null;
   note: string | null;
@@ -50,7 +53,9 @@ const INVITE_CODES: MockInviteCode[] = ['CATPAW26AB', 'CATPAW26CD', 'CATPAW26EF'
   code,
   status: 'UNUSED',
   createdBy: 'mgr_catpaw',
+  createdByNickname: '管理员',
   usedByWechatId: null,
+  usedByNickname: null,
   usedAt: null,
   expiresAt: null,
   note: '本地演示码',
@@ -295,6 +300,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     }
     invite.status = 'USED';
     invite.usedByWechatId = body.wechatId ?? '';
+    invite.usedByNickname = body.nickname ?? null;
     invite.usedAt = nowIso();
     json(res, {
       id: '99', wechatId: body.wechatId ?? '', nickname: body.nickname ?? '',
@@ -517,7 +523,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       return {
         ...base, id: `${batch}-${i}`,
         source: 'ONLINE' as const,
-        userId: acc!.id, userWechatId: acc!.wechatId,
+        userId: acc!.id, userWechatId: acc!.wechatId, userNickname: acc!.nickname,
         eventId: ev.id, event: ev, eventTitle: ev.title,
         sessionId: target?.id ?? base.sessionId,
         session: target ?? base.session,
@@ -554,11 +560,11 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     if (needAuth()) return;
     if (acc!.balanceCent == null) { json(res, paginate([])); return; }
     const list = [
-      { id: 't1', accountUserId: acc!.id, accountWechatId: acc!.wechatId, direction: 'IN', amountCent: acc!.balanceCent, balanceAfterCent: acc!.balanceCent, bizType: 'MANUAL_ADJUST', bizId: 'seed', originTxnId: null, idempotencyKey: 'mock-1', operatorId: '1', remark: '种子入账', createdAt: new Date(Date.now() - 5 * 86400000).toISOString() },
-      { id: 't2', accountUserId: acc!.id, accountWechatId: acc!.wechatId, direction: 'FREEZE', amountCent: 18900, balanceAfterCent: acc!.balanceCent, bizType: 'FREEZE', bizId: 'r1', originTxnId: null, idempotencyKey: 'mock-2', operatorId: null, remark: '报名冻结', createdAt: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { id: 't1', accountUserId: acc!.id, accountWechatId: acc!.wechatId, accountNickname: acc!.nickname, direction: 'IN', amountCent: acc!.balanceCent, balanceAfterCent: acc!.balanceCent, bizType: 'MANUAL_ADJUST', bizId: 'seed', originTxnId: null, idempotencyKey: 'mock-1', operatorId: '1', remark: '种子入账', createdAt: new Date(Date.now() - 5 * 86400000).toISOString() },
+      { id: 't2', accountUserId: acc!.id, accountWechatId: acc!.wechatId, accountNickname: acc!.nickname, direction: 'FREEZE', amountCent: 18900, balanceAfterCent: acc!.balanceCent, bizType: 'FREEZE', bizId: 'r1', originTxnId: null, idempotencyKey: 'mock-2', operatorId: null, remark: '报名冻结', createdAt: new Date(Date.now() - 3 * 86400000).toISOString() },
     ];
     if ((acc!.bonusCent ?? 0) > 0) {
-      list.push({ id: 't3', accountUserId: acc!.id, accountWechatId: acc!.wechatId, direction: 'IN', amountCent: acc!.bonusCent!, balanceAfterCent: acc!.balanceCent, bizType: 'BONUS', bizId: 'seed-bonus', originTxnId: null, idempotencyKey: 'mock-3', operatorId: '1', remark: '充值赠送', createdAt: new Date(Date.now() - 4 * 86400000).toISOString() });
+      list.push({ id: 't3', accountUserId: acc!.id, accountWechatId: acc!.wechatId, accountNickname: acc!.nickname, direction: 'IN', amountCent: acc!.bonusCent!, balanceAfterCent: acc!.balanceCent, bizType: 'BONUS', bizId: 'seed-bonus', originTxnId: null, idempotencyKey: 'mock-3', operatorId: '1', remark: '充值赠送', createdAt: new Date(Date.now() - 4 * 86400000).toISOString() });
     }
     json(res, paginate(list));
     return;
@@ -863,7 +869,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
         feeCent, originalFeeCent: unitCent, discountCent, couponId: cid,
         couponTitle: cid ? (owned.find((c) => c.id === cid)?.title ?? null) : null,
         refundPolicySnapshot: event.refundPolicy, balanceTxnId: null, cancelReason: null,
-        userWechatId: account.wechatId,
+        userWechatId: account.wechatId, userNickname: account.nickname,
         eventTitle: event.title, sessionLabel: session.label, sessionStartAt: session.startAt,
         event, session, createdAt: stamp, updatedAt: stamp,
       };
@@ -924,7 +930,9 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       .filter((r) => {
         if (!kw) return true;
         const title = String((r as unknown as Record<string, unknown>).eventTitle ?? '').toLowerCase();
-        return String(r.userWechatId ?? '').toLowerCase().includes(kw) || title.includes(kw);
+        return String(r.userWechatId ?? '').toLowerCase().includes(kw)
+          || String(r.userNickname ?? '').toLowerCase().includes(kw)
+          || title.includes(kw);
       });
     const page = Math.max(1, Number(url.searchParams.get('page') ?? 1) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') ?? 20) || 20));
@@ -1150,7 +1158,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     // 给财务页一组演示流水，验证「微信号 + 方向语义 + 赠送积分」展示
     const demo = ACCOUNTS.filter((a) => a.balanceCent != null).slice(0, 2);
     const rows = demo.map((a, i) => ({
-      id: `at${i + 1}`, accountUserId: a.id, accountWechatId: a.wechatId,
+      id: `at${i + 1}`, accountUserId: a.id, accountWechatId: a.wechatId, accountNickname: a.nickname,
       direction: i === 0 ? 'FREEZE' : 'IN', amountCent: i === 0 ? 28900 : 50000,
       balanceAfterCent: a.balanceCent, bizType: i === 0 ? 'FREEZE' : 'MANUAL_ADJUST',
       bizId: i === 0 ? 'r1' : 'seed', originTxnId: null, operatorId: i === 0 ? null : '1',
@@ -1160,7 +1168,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const bonusAcc = ACCOUNTS.find((a) => (a.bonusCent ?? 0) > 0);
     if (bonusAcc) {
       rows.push({
-        id: 'at-bonus', accountUserId: bonusAcc.id, accountWechatId: bonusAcc.wechatId,
+        id: 'at-bonus', accountUserId: bonusAcc.id, accountWechatId: bonusAcc.wechatId, accountNickname: bonusAcc.nickname,
         direction: 'IN', amountCent: bonusAcc.bonusCent!, balanceAfterCent: bonusAcc.balanceCent,
         bizType: 'BONUS', bizId: 'seed-bonus', originTxnId: null, operatorId: '1',
         remark: '充值赠送', createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
@@ -1303,8 +1311,12 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const rows = AUDIT_LOGS.map((l) => ({
       ...l,
       actorWechatId: ACCOUNTS.find((a) => a.id === l.actorId)?.wechatId ?? null,
+      actorNickname: ACCOUNTS.find((a) => a.id === l.actorId)?.nickname ?? null,
+      // 与真实服务端一致：只有 targetType==='user' 才回填对象昵称
+      targetWechatId: l.targetType === 'user' ? (ACCOUNTS.find((a) => a.id === l.targetId)?.wechatId ?? null) : null,
+      targetNickname: l.targetType === 'user' ? (ACCOUNTS.find((a) => a.id === l.targetId)?.nickname ?? null) : null,
     })).filter((l) => (!action || l.action === action)
-      && (!kw || [l.actorWechatId, l.action, l.targetType, l.targetId].some((v) => String(v ?? '').toLowerCase().includes(kw))));
+      && (!kw || [l.actorWechatId, l.actorNickname, l.targetWechatId, l.targetNickname, l.action, l.targetType, l.targetId].some((v) => String(v ?? '').toLowerCase().includes(kw))));
     json(res, paginate(rows));
     return;
   }
@@ -1315,9 +1327,11 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const rows = PERMISSION_LOGS.map((l) => ({
       ...l,
       actorWechatId: ACCOUNTS.find((a) => a.id === l.actorId)?.wechatId ?? null,
+      actorNickname: ACCOUNTS.find((a) => a.id === l.actorId)?.nickname ?? null,
       targetWechatId: ACCOUNTS.find((a) => a.id === l.targetId)?.wechatId ?? null,
+      targetNickname: ACCOUNTS.find((a) => a.id === l.targetId)?.nickname ?? null,
     })).filter((l) => (!action || l.action === action)
-      && (!kw || [l.actorWechatId, l.targetWechatId, l.action, l.targetId].some((v) => String(v ?? '').toLowerCase().includes(kw))));
+      && (!kw || [l.actorWechatId, l.actorNickname, l.targetWechatId, l.targetNickname, l.action, l.targetId].some((v) => String(v ?? '').toLowerCase().includes(kw))));
     json(res, paginate(rows));
     return;
   }
@@ -1333,8 +1347,9 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     for (let i = 0; i < count; i += 1) {
       const code = randomCode();
       INVITE_CODES.unshift({
-        id: String(Date.now() + i), code, status: 'UNUSED', createdBy: acc!.wechatId,
-        usedByWechatId: null, usedAt: null,
+        id: String(Date.now() + i), code, status: 'UNUSED',
+        createdBy: acc!.wechatId, createdByNickname: acc!.nickname,
+        usedByWechatId: null, usedByNickname: null, usedAt: null,
         expiresAt: body.expiresAt ?? null, note: body.note ?? null, createdAt: nowIso(),
       });
       codes.push(code);
@@ -1362,10 +1377,13 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       .filter((c) => !status || c.status === status)
       .filter((c) => !kw || c.code.toLowerCase().includes(kw)
         || c.createdBy.toLowerCase().includes(kw)
-        || (c.usedByWechatId ?? '').toLowerCase().includes(kw))
+        || (c.createdByNickname ?? '').toLowerCase().includes(kw)
+        || (c.usedByWechatId ?? '').toLowerCase().includes(kw)
+        || (c.usedByNickname ?? '').toLowerCase().includes(kw))
       .map((c) => ({
         id: c.id, code: c.code, status: c.status,
-        createdByWechatId: c.createdBy, usedByWechatId: c.usedByWechatId,
+        createdByWechatId: c.createdBy, createdByNickname: c.createdByNickname,
+        usedByWechatId: c.usedByWechatId, usedByNickname: c.usedByNickname,
         usedAt: c.usedAt, expiresAt: c.expiresAt, note: c.note, createdAt: c.createdAt,
       }));
     json(res, paginate(rows));
@@ -1390,7 +1408,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
     const target = ACCOUNTS.find((a) => a.wechatId === body.wechatId);
     if (!target) { fail(res, BIZ_CODES.RESOURCE_NOT_FOUND, `微信号「${body.wechatId ?? ''}」不存在`); return; }
     if (target.roles.includes('SUPER_ADMIN')) { fail(res, BIZ_CODES.FORBIDDEN, '系统账号不可在后台重置密码'); return; }
-    json(res, { wechatId: target.wechatId, temporaryPassword: 'Aw1MockReset2026' });
+    json(res, { wechatId: target.wechatId, nickname: target.nickname ?? null, temporaryPassword: 'Aw1MockReset2026' });
     return;
   }
 
@@ -1548,7 +1566,7 @@ export async function mockHandler(req: IncomingMessage, res: ServerResponse): Pr
       skipped: body.overwrite ? 0 : existed.length,
       failed: 0,
       errors: [],
-      credentials: created.map((r) => ({ wechatId: r.wechatId, temporaryPassword })),
+      credentials: created.map((r) => ({ wechatId: r.wechatId, nickname: r.nickname ?? null, temporaryPassword })),
     });
     return;
   }

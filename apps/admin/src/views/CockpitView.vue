@@ -14,6 +14,7 @@ import { api } from '../api';
 import { useSessionStore } from '../stores/session';
 import { useUiStore } from '../stores/ui';
 import { emptyPage, loadAllPages } from '../utils/loadAll';
+import { personLabel } from '../utils/labels';
 import { useCountUp } from '../composables/useCountUp';
 import CkChart from '../components/cockpit/CkChart.vue';
 import {
@@ -564,7 +565,7 @@ function exportSnapshot(): void {
             <ul v-if="recentRefunds.length" class="space-y-1.5">
               <li v-for="r in recentRefunds" :key="r.id"
                 class="flex items-center gap-3 rounded-lg border border-[#1e2a45] bg-[#0d1428]/60 px-3 py-2 text-xs transition hover:border-[#2a3550]">
-                <span class="font-mono text-slate-200">{{ r.requesterWechatId ?? `用户 #${r.requestedBy}` }}</span>
+                <span class="font-mono text-slate-200">{{ personLabel(r.requesterNickname, r.requesterWechatId, r.requestedBy, { withWechat: false }) }}</span>
                 <span class="truncate text-[#8b93a7]">{{ r.eventTitle ?? '未知场次' }} · {{ r.sessionLabel ?? '—' }}</span>
                 <span class="ml-auto shrink-0 font-mono text-slate-200">{{ fmtYuan(r.amountCent) }}</span>
                 <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="REFUND_META[r.status]?.cls ?? ''">
@@ -587,7 +588,7 @@ function exportSnapshot(): void {
                   <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" :style="{ background: REG_DOT[r.status] ?? '#8b93a7' }" />
                   <div class="min-w-0 flex-1">
                     <p class="truncate text-xs text-slate-200">
-                      <span class="font-mono">{{ r.userWechatId ?? `用户 #${r.userId}` }}</span>
+                      <span class="font-mono">{{ personLabel(r.userNickname, r.userWechatId, r.userId, { withWechat: false }) }}</span>
                       <span class="text-[#8b93a7]"> 报名了 </span>{{ r.eventTitle ?? '未知场次' }}
                     </p>
                     <p class="text-[11px] text-[#8b93a7]">{{ r.sessionLabel ?? '—' }} · {{ relTime(r.createdAt) }}</p>

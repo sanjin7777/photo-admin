@@ -9,7 +9,7 @@ import { api } from '../api';
 import { useSessionStore } from '../stores/session';
 import { useUiStore } from '../stores/ui';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
-import { AUDIT_ACTION, TARGET_TYPE } from '../utils/labels';
+import { AUDIT_ACTION, TARGET_TYPE, personLabel } from '../utils/labels';
 
 const ui = useUiStore();
 const session = useSessionStore();
@@ -58,8 +58,12 @@ async function load(): Promise<void> {
       auditRows.value = logs.list.map((l) => ({
         id: l.id,
         action: AUDIT_ACTION[l.action] ?? l.action,
-        target: `${TARGET_TYPE[l.targetType] ?? l.targetType}${l.targetId ? ` #${l.targetId}` : ''}`,
-        actor: l.actorWechatId ?? (l.actorId ? `用户 #${l.actorId}` : '系统'),
+        // 对象列：targetType==='user' 时服务端 join 出了对方昵称，直接显示；
+        // 其它实体（场次/报名/退款…）的 target_id 指向不同表，只能退化成 #id
+        target: l.targetNickname || l.targetWechatId
+          ? `${TARGET_TYPE[l.targetType] ?? l.targetType} ${personLabel(l.targetNickname, l.targetWechatId, l.targetId)}`
+          : `${TARGET_TYPE[l.targetType] ?? l.targetType}${l.targetId ? ` #${l.targetId}` : ''}`,
+        actor: l.actorId ? personLabel(l.actorNickname, l.actorWechatId, l.actorId) : '系统',
         created: new Date(l.createdAt).toLocaleString('zh-CN'),
       }));
     })());
@@ -74,8 +78,11 @@ async function load(): Promise<void> {
       permissionRows.value = perms.list.map((p) => ({
         id: p.id,
         action: AUDIT_ACTION[p.action] ?? p.action,
-        target: `${TARGET_TYPE[p.targetType] ?? p.targetType}${p.targetId ? ` #${p.targetId}` : ''}`,
-        actor: p.actorWechatId ?? (p.actorId ? `用户 #${p.actorId}` : '系统'),
+        // 权限日志的对象一定是"某个用户"，服务端 join 了 target users，这里直接给昵称
+        target: `${TARGET_TYPE[p.targetType] ?? p.targetType} ${
+          personLabel(p.targetNickname, p.targetWechatId, p.targetId)
+        }`,
+        actor: p.actorId ? personLabel(p.actorNickname, p.actorWechatId, p.actorId) : '系统',
         created: new Date(p.createdAt).toLocaleString('zh-CN'),
       }));
     })());

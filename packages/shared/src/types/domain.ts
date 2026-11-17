@@ -112,6 +112,8 @@ export interface BalanceTransactionDto {
   accountUserId: Id;
   /** 账户所属用户微信号（后台列表 join users 回填，便于认出是谁） */
   accountWechatId: string | null;
+  /** 账户所属用户昵称（join users 回填，与微信号一起显示） */
+  accountNickname: string | null;
   direction: BalanceTxnDirection;
   amountCent: Cent;
   balanceAfterCent: Cent;
@@ -168,6 +170,8 @@ export interface ModelProfileDto extends Timestamps {
   userId: Id | null;
   /** 绑定账号的微信号（服务端 join 带出），供无会员列表权限的角色显示 */
   boundWechatId: string | null;
+  /** 绑定账号的昵称（服务端 join 带出，与微信号一起显示，避免只看到账号串） */
+  boundNickname: string | null;
   stageName: string;
   /** 身高（敏感）：仅会员可见，普通用户/游客为 null */
   heightCm: number | null;
@@ -417,6 +421,11 @@ export interface RegistrationDto extends Timestamps {
   userId: Id;
   /** 后台列表回填的微信号，便于运营按微信号找人 */
   userWechatId: string | null;
+  /**
+   * 报名人昵称（服务端 join users 回填）。
+   * 只有微信号时运营要靠「去会员管理搜一次」才知道是谁，列表里必须直接给名字。
+   */
+  userNickname: string | null;
   /** 关联场次名称（列表 join events 回填，避免只看到 #id） */
   eventTitle: string | null;
   /** 关联时段名称（列表 join event_sessions 回填） */
@@ -616,8 +625,12 @@ export interface InviteCodeDto {
   status: 'UNUSED' | 'USED' | 'REVOKED';
   /** 生成人微信号；列表 JOIN users 得到 */
   createdByWechatId: string | null;
+  /** 生成人昵称；与微信号一起显示，避免只剩一个账号串 */
+  createdByNickname: string | null;
   /** 使用人微信号；未使用为 null */
   usedByWechatId: string | null;
+  /** 使用人昵称；未使用为 null */
+  usedByNickname: string | null;
   usedAt: ISODateTime | null;
   expiresAt: ISODateTime | null;
   note: string | null;
@@ -704,9 +717,17 @@ export interface AuditLogDto {
   actorId: Id | null;
   /** 操作人微信号（后台列表 join users 带出；系统任务为 null） */
   actorWechatId: string | null;
+  /** 操作人昵称（join users 带出；系统任务为 null） */
+  actorNickname: string | null;
   action: AuditAction;
   targetType: string;
   targetId: Id | null;
+  /**
+   * 被操作对象的微信号/昵称：仅 targetType==='user' 时回填。
+   * 其它类型（场次、退款单…）的 target_id 指向不同的表，服务端无法统一 join，保持 null。
+   */
+  targetWechatId: string | null;
+  targetNickname: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   ip: string | null;

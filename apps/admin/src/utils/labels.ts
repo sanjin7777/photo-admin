@@ -126,6 +126,33 @@ export function points(cent: number | null | undefined): string {
   return `${formatPoints(cent)} 积分`;
 }
 
+/**
+ * 用户展示名：昵称优先，微信号其次，最后才退回 `#id`。
+ *
+ * 为什么需要它：后台列表原来直接渲染 `userWechatId`，而微信号是用户自己起的英文串
+ * （例如 `c1021522802`、`symj_sunshine_young`），运营看了认不出是谁，必须再去会员管理里搜一次。
+ * 现在服务端 join users 回填了 nickname，统一用这个函数拼「昵称（微信号）」。
+ *
+ * @param nickname 昵称，服务端 join 得到；可能为 null（用户没设昵称）
+ * @param wechatId 微信号；可能为 null（比如账号已注销、或该行没有 join 到用户）
+ * @param id       用户主键；三者都缺时兜底显示 `#id`
+ * @param opts.withWechat 是否附上微信号。列表空间紧张时传 false 只显示昵称
+ */
+export function personLabel(
+  nickname: string | null | undefined,
+  wechatId: string | null | undefined,
+  id?: string | number | null,
+  opts: { withWechat?: boolean } = {},
+): string {
+  const name = (nickname ?? '').trim();
+  const wx = (wechatId ?? '').trim();
+  if (name && wx && opts.withWechat !== false) return `${name}（${wx}）`;
+  if (name) return name;
+  if (wx) return wx;
+  if (id != null && String(id) !== '') return `#${id}`;
+  return '—';
+}
+
 /** ISO → 本地 `MM/DD HH:mm`，列表里省空间 */
 export function shortTime(iso: string | null | undefined): string {
   if (!iso) return '—';

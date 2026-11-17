@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 本地 Mock 数据集。
  *
  * 只依赖 @photo/shared 的类型语义，不连数据库。
@@ -249,7 +249,7 @@ export const REGISTRATIONS = [
     feeCent: 18900, originalFeeCent: 18900, discountCent: 0, couponId: null, couponTitle: null,
     refundPolicySnapshot: { freeCancelBeforeHours: 24, feeRatio: 0.3 },
     balanceTxnId: null, cancelReason: null,
-    userWechatId: 'u1_catpaw',
+    userWechatId: 'u1_catpaw', userNickname: '用户甲',
     eventTitle: EVENT_PUBLIC.title, sessionLabel: EVENT_PUBLIC.sessions[0].label,
     sessionStartAt: EVENT_PUBLIC.sessions[0].startAt,
     event: EVENT_PUBLIC, session: EVENT_PUBLIC.sessions[0],
@@ -261,7 +261,7 @@ export const REGISTRATIONS = [
     feeCent: 16065, originalFeeCent: 18900, discountCent: 2835, couponId: 'c3', couponTitle: 'SVIP 高端场 85 折券',
     refundPolicySnapshot: { freeCancelBeforeHours: 24, feeRatio: 0.3 },
     balanceTxnId: null, cancelReason: null,
-    userWechatId: 'svip_catpaw',
+    userWechatId: 'svip_catpaw', userNickname: 'SVIP会员',
     eventTitle: EVENT_SVIP.title, sessionLabel: EVENT_SVIP.sessions[0].label,
     sessionStartAt: EVENT_SVIP.sessions[0].startAt,
     event: EVENT_SVIP, session: EVENT_SVIP.sessions[0],
@@ -274,7 +274,7 @@ export const REGISTRATIONS = [
     feeCent: 16900, originalFeeCent: 16900, discountCent: 0, couponId: null, couponTitle: null,
     refundPolicySnapshot: { freeCancelBeforeHours: 24, feeRatio: 0.3 },
     balanceTxnId: null, cancelReason: null,
-    userWechatId: 'vip_catpaw',
+    userWechatId: 'vip_catpaw', userNickname: 'VIP会员',
     eventTitle: EVENT_PUBLIC.title, sessionLabel: EVENT_PUBLIC.sessions[1].label,
     sessionStartAt: EVENT_PUBLIC.sessions[1].startAt,
     event: EVENT_PUBLIC, session: EVENT_PUBLIC.sessions[1],
@@ -286,7 +286,7 @@ export const REGISTRATIONS = [
     feeCent: 14900, originalFeeCent: 14900, discountCent: 0, couponId: null, couponTitle: null,
     refundPolicySnapshot: { freeCancelBeforeHours: 24, feeRatio: 0.3 },
     balanceTxnId: null, cancelReason: null,
-    userWechatId: 'svip_catpaw',
+    userWechatId: 'svip_catpaw', userNickname: 'SVIP会员',
     eventTitle: EVENT_PUBLIC.title, sessionLabel: EVENT_PUBLIC.sessions[1].label,
     sessionStartAt: EVENT_PUBLIC.sessions[1].startAt,
     event: EVENT_PUBLIC, session: EVENT_PUBLIC.sessions[1],
@@ -542,7 +542,7 @@ for (const ev of HISTORY_EVENTS) {
         couponTitle: withCoupon ? '全场 85 折券' : null,
         refundPolicySnapshot: ev.refundPolicy, balanceTxnId: null,
         cancelReason: cancelled ? '个人原因取消' : null,
-        userWechatId: user.wechatId,
+        userWechatId: user.wechatId, userNickname: user.nickname,
         eventTitle: ev.title, sessionLabel: s.label, sessionStartAt: s.startAt,
         event: ev, session: s, createdAt, updatedAt: createdAt,
       };
@@ -559,7 +559,7 @@ cancelledRows.slice(0, 4).forEach((r, i) => {
   (REFUNDS as unknown as Array<Record<string, unknown>>).push({
     id: `hr${i + 1}`, registrationId: r.id, amountCent: r.feeCent,
     reason: '行程冲突，申请退款', status: 'REFUNDED' as const,
-    requestedBy: r.userId, requesterWechatId: r.userWechatId, requesterNickname: null,
+    requestedBy: r.userId, requesterWechatId: r.userWechatId, requesterNickname: r.userNickname ?? null,
     eventId: r.eventId, eventTitle: r.eventTitle,
     sessionId: r.sessionId, sessionLabel: r.sessionLabel, sessionStartAt: r.sessionStartAt, sessionEndAt: null,
     paymentStatus: (ACCOUNTS.find((a) => a.id === r.userId)?.level === 'NONE' ? 'PAID' : 'NOT_REQUIRED') as 'PAID' | 'NOT_REQUIRED',
@@ -573,7 +573,7 @@ if (cancelledRows[4]) {
   (REFUNDS as unknown as Array<Record<string, unknown>>).push({
     id: 'hr5', registrationId: r.id, amountCent: r.feeCent,
     reason: '临时不想拍了', status: 'REJECTED' as const,
-    requestedBy: r.userId, requesterWechatId: r.userWechatId, requesterNickname: null,
+    requestedBy: r.userId, requesterWechatId: r.userWechatId, requesterNickname: r.userNickname ?? null,
     eventId: r.eventId, eventTitle: r.eventTitle,
     sessionId: r.sessionId, sessionLabel: r.sessionLabel, sessionStartAt: r.sessionStartAt, sessionEndAt: null,
     paymentStatus: (ACCOUNTS.find((a) => a.id === r.userId)?.level === 'NONE' ? 'PAID' : 'NOT_REQUIRED') as 'PAID' | 'NOT_REQUIRED',

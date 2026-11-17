@@ -300,8 +300,10 @@ async function createRegistration(
       }
 
       const [rows] = await conn.execute<RegistrationRow[]>(
-        `SELECT r.*, c.title AS coupon_title
-           FROM registrations r LEFT JOIN coupons c ON c.id = r.coupon_id
+        `SELECT r.*, u.wechat_id AS user_wechat_id, u.nickname AS user_nickname, c.title AS coupon_title
+           FROM registrations r
+           LEFT JOIN users u ON u.id = r.user_id
+           LEFT JOIN coupons c ON c.id = r.coupon_id
           WHERE r.id = ?`,
         [regId],
       );
@@ -594,7 +596,7 @@ async function createManualRegistration(
       }
 
       const [rows] = await conn.execute<RegistrationRow[]>(
-        `SELECT r.*, u.wechat_id AS user_wechat_id, c.title AS coupon_title
+        `SELECT r.*, u.wechat_id AS user_wechat_id, u.nickname AS user_nickname, c.title AS coupon_title
            FROM registrations r
            LEFT JOIN users u ON u.id = r.user_id
            LEFT JOIN coupons c ON c.id = r.coupon_id
@@ -698,8 +700,8 @@ export function mountRegistrations(app: Express): void {
     if (paymentStatus) { conds.push('r.payment_status = ?'); condParams.push(paymentStatus); }
     const kw = (keyword ?? '').trim();
     if (kw) {
-      conds.push('(u.wechat_id LIKE ? OR e.title LIKE ?)');
-      condParams.push(`%${kw}%`, `%${kw}%`);
+      conds.push('(u.wechat_id LIKE ? OR u.nickname LIKE ? OR e.title LIKE ?)');
+      condParams.push(`%${kw}%`, `%${kw}%`, `%${kw}%`);
     }
     // 报名时间范围：按本地自然日切，end 用次日零点配 `<`（DATETIME(3) 有毫秒，23:59:59 会漏）
     const range = localDayRangeUtc(dateFrom, dateTo);
@@ -712,7 +714,7 @@ export function mountRegistrations(app: Express): void {
        LEFT JOIN users u ON u.id = r.user_id
        LEFT JOIN events e ON e.id = r.event_id`;
     const [rows] = await pool.execute<RegistrationRow[]>(
-      `SELECT r.*, u.wechat_id AS user_wechat_id,
+      `SELECT r.*, u.wechat_id AS user_wechat_id, u.nickname AS user_nickname,
               e.title AS event_title,
               s.label AS session_label, s.start_at AS session_start_at, s.end_at AS session_end_at,
               s.capacity AS session_capacity, s.capacity_used AS session_capacity_used,

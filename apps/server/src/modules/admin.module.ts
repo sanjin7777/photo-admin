@@ -16,24 +16,43 @@ import { hashPassword } from '../utils/password';
 import { toSqlDateTime } from '../utils/datetime';
 import { sendOk } from '../utils/response';
 
-/** 白名单：字段名固定，不含手机号、邮箱、联系方式、密码哈希、before/after 明细 */
+/**
+ * 白名单：字段名固定，不含手机号、邮箱、联系方式、密码哈希、before/after 明细。
+ *
+ * 每张表都 join users 补昵称：导出的 CSV 只给 user_id 时，运营在 Excel 里
+ * 根本认不出是谁，只能再回后台一页页搜。去掉 id 也不行——对账时需要它和库对上。
+ */
 const EXPORT_TARGETS: Readonly<Record<string, { sql: string; columns: readonly string[] }>> = {
   registrations: {
-    sql: 'SELECT id, event_id, user_id, status, fee_cent, created_at FROM registrations ORDER BY created_at DESC LIMIT 5000',
-    columns: ['id', 'event_id', 'user_id', 'status', 'fee_cent', 'created_at'],
+    sql: `SELECT r.id, r.event_id, r.user_id, u.nickname AS user_nickname,
+                 r.status, r.fee_cent, r.created_at
+            FROM registrations r LEFT JOIN users u ON u.id = r.user_id
+           ORDER BY r.created_at DESC LIMIT 5000`,
+    columns: ['id', 'event_id', 'user_id', 'user_nickname', 'status', 'fee_cent', 'created_at'],
   },
   refunds: {
     // 带上 settled_at：导出退款台账时要能一眼分出「已批准待线下退款」的挂账单
-    sql: 'SELECT id, registration_id, amount_cent, status, settled_at, created_at FROM refund_orders ORDER BY created_at DESC LIMIT 5000',
-    columns: ['id', 'registration_id', 'amount_cent', 'status', 'settled_at', 'created_at'],
+    sql: `SELECT ro.id, ro.registration_id, u.nickname AS requester_nickname,
+                 ro.amount_cent, ro.status, ro.settled_at, ro.created_at
+            FROM refund_orders ro
+            LEFT JOIN registrations r ON r.id = ro.registration_id
+            LEFT JOIN users u ON u.id = r.user_id
+           ORDER BY ro.created_at DESC LIMIT 5000`,
+    columns: ['id', 'registration_id', 'requester_nickname', 'amount_cent', 'status', 'settled_at', 'created_at'],
   },
   balance_transactions: {
-    sql: 'SELECT id, account_user_id, direction, amount_cent, biz_type, created_at FROM balance_transactions ORDER BY created_at DESC LIMIT 5000',
-    columns: ['id', 'account_user_id', 'direction', 'amount_cent', 'biz_type', 'created_at'],
+    sql: `SELECT t.id, t.account_user_id, u.nickname AS account_nickname,
+                 t.direction, t.amount_cent, t.biz_type, t.created_at
+            FROM balance_transactions t LEFT JOIN users u ON u.id = t.account_user_id
+           ORDER BY t.created_at DESC LIMIT 5000`,
+    columns: ['id', 'account_user_id', 'account_nickname', 'direction', 'amount_cent', 'biz_type', 'created_at'],
   },
   audit_logs: {
-    sql: 'SELECT id, actor_id, action, target_type, target_id, trace_id, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 5000',
-    columns: ['id', 'actor_id', 'action', 'target_type', 'target_id', 'trace_id', 'created_at'],
+    sql: `SELECT a.id, a.actor_id, u.nickname AS actor_nickname,
+                 a.action, a.target_type, a.target_id, a.trace_id, a.created_at
+            FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id
+           ORDER BY a.created_at DESC LIMIT 5000`,
+    columns: ['id', 'actor_id', 'actor_nickname', 'action', 'target_type', 'target_id', 'trace_id', 'created_at'],
   },
 };
 
@@ -304,10 +323,12 @@ export function mountAdmin(app: Express): void {
     const p = req.body as AdminResetPasswordPayload;
     const actorId = getIdentity()?.userId ?? null;
     const [rows] = await pool.execute<RowDataPacket[]>(
-      'SELECT id FROM users WHERE wechat_id = ? AND deleted_at IS NULL LIMIT 1', [p.wechatId],
+      'SELECT id, nickname FROM users WHERE wechat_id = ? AND deleted_at IS NULL LIMIT 1', [p.wechatId],
     );
     if (!rows[0]) throw new AppError(BIZ_CODES.RESOURCE_NOT_FOUND, `微信号「${p.wechatId}」不存在`);
     const id = String(rows[0].id);
+    // 回传昵称：弹窗里「XXX 的临时密码」要给运营认得出的人名，只有账号串等于没写
+    const nickname = rows[0].nickname == null ? null : String(rows[0].nickname);
 
     const [isSuper] = await pool.execute<RowDataPacket[]>(
       "SELECT 1 FROM admin_roles WHERE user_id = ? AND role = 'SUPER_ADMIN' LIMIT 1", [id],
@@ -326,7 +347,7 @@ export function mountAdmin(app: Express): void {
       action: 'USER_PASSWORD_RESET', targetType: 'user', targetId: id,
       after: { wechatId: p.wechatId, resetBy: actorId }, actorId: actorId ?? undefined,
     });
-    sendOk(res, { wechatId: p.wechatId, temporaryPassword });
+    sendOk(res, { wechatId: p.wechatId, nickname, temporaryPassword });
   }));
 
   router.get('/audit-logs', requireCapabilities('admin:audit:read'), validateQuery(auditLogQuerySchema), asyncHandler(async (req, res) => {
@@ -337,16 +358,23 @@ export function mountAdmin(app: Express): void {
     if (action) { where.push('a.action = ?'); params.push(action); }
     if (keyword) {
       const like = `%${keyword}%`;
-      where.push('(u.wechat_id LIKE ? OR a.action LIKE ? OR a.target_type LIKE ? OR CAST(a.target_id AS CHAR) LIKE ?)');
-      params.push(like, like, like, like);
+      where.push(
+        '(u.wechat_id LIKE ? OR u.nickname LIKE ? OR a.action LIKE ? OR a.target_type LIKE ? OR CAST(a.target_id AS CHAR) LIKE ? OR tu.wechat_id LIKE ? OR tu.nickname LIKE ?)',
+      );
+      params.push(like, like, like, like, like, like, like);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    // 「对象」列原来只有 #id：target_type='user' 时把对方昵称也带出来，
+    // 其它实体（场次、退款单…）的 target_id 指向不同表，无法统一 join，保持显示 #id。
+    const auditJoins = `FROM audit_logs a
+       LEFT JOIN users u ON u.id = a.actor_id
+       LEFT JOIN users tu ON tu.id = a.target_id AND a.target_type = 'user'`;
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT a.*, u.wechat_id AS actor_wechat_id FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id ${whereSql} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT a.*, u.wechat_id AS actor_wechat_id, u.nickname AS actor_nickname, tu.wechat_id AS target_wechat_id, tu.nickname AS target_nickname ${auditJoins} ${whereSql} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
       [...params, pageSize, offset],
     );
     const [counts] = await pool.execute<RowDataPacket[]>(
-      `SELECT COUNT(*) AS total FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id ${whereSql}`,
+      `SELECT COUNT(*) AS total ${auditJoins} ${whereSql}`,
       params,
     );
     sendOk(res, paginatedOf(rows.map(auditDtoOf), Number(counts[0]?.total ?? 0), page, pageSize));
@@ -361,13 +389,15 @@ export function mountAdmin(app: Express): void {
     if (action) { where.push('p.action = ?'); params.push(action); }
     if (keyword) {
       const like = `%${keyword}%`;
-      where.push('(u.wechat_id LIKE ? OR t.wechat_id LIKE ? OR p.action LIKE ? OR CAST(p.target_user_id AS CHAR) LIKE ?)');
-      params.push(like, like, like, like);
+      where.push('(u.wechat_id LIKE ? OR u.nickname LIKE ? OR t.wechat_id LIKE ? OR t.nickname LIKE ? OR p.action LIKE ? OR CAST(p.target_user_id AS CHAR) LIKE ?)');
+      params.push(like, like, like, like, like, like);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const joins = 'FROM permission_logs p LEFT JOIN users u ON u.id = p.actor_id LEFT JOIN users t ON t.id = p.target_user_id';
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT p.*, u.wechat_id AS actor_wechat_id ${joins} ${whereSql} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT p.*, u.wechat_id AS actor_wechat_id, u.nickname AS actor_nickname,
+              t.wechat_id AS target_wechat_id, t.nickname AS target_nickname
+       ${joins} ${whereSql} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`,
       [...params, pageSize, offset],
     );
     const [counts] = await pool.execute<RowDataPacket[]>(`SELECT COUNT(*) AS total ${joins} ${whereSql}`, params);

@@ -15,7 +15,7 @@ import {
 import { api } from '../api';
 import UserPicker from '../components/UserPicker.vue';
 import { useUiStore } from '../stores/ui';
-import { EVENT_STATUS, MEMBER_LEVEL, PAYMENT_STATUS, REGISTRATION_SOURCE, REGISTRATION_STATUS, metaOf, shortTime, points } from '../utils/labels';
+import { EVENT_STATUS, MEMBER_LEVEL, PAYMENT_STATUS, REGISTRATION_SOURCE, REGISTRATION_STATUS, metaOf, personLabel, shortTime, points } from '../utils/labels';
 import { loadAllPages } from '../utils/loadAll';
 import AppPagination from '../components/AppPagination.vue';
 
@@ -177,7 +177,7 @@ async function act(r: RegistrationDto, action: 'CANCEL' | 'CHECK_IN'): Promise<v
       ? '将生成退款单，审核通过后积分自动回充。'
       : '将生成退款单，该报名为线下支付，审核通过后需线下退款，不回充积分。';
     try {
-      await ui.confirm(`取消「${r.userWechatId ?? r.userId}」在「${r.event?.title ?? '该场次'}」的报名？${refundHint}`);
+      await ui.confirm(`取消「${personLabel(r.userNickname, r.userWechatId, r.userId)}」在「${r.event?.title ?? '该场次'}」的报名？${refundHint}`);
     } catch { return; }
   }
   try {
@@ -479,7 +479,7 @@ async function submitManual(): Promise<void> {
   if (manualDuplicate.value) {
     try {
       await ui.confirm(
-        `「${lookup.value.wechatId}」在该时段已有报名 #${manualDuplicate.value.id}，确定再录入一条？`,
+        `「${personLabel(lookup.value.nickname, lookup.value.wechatId)}」在该时段已有报名 #${manualDuplicate.value.id}，确定再录入一条？`,
         '重复报名确认',
       );
     } catch { return; }
@@ -574,7 +574,7 @@ async function addAvoidRule(): Promise<void> {
     );
     if (live) {
       await ui.confirm(
-        `「${avoidBlocked.value.wechatId}」已在这个时段报名（#${live.id}）。加入回避名单不会取消他现有的报名，需要你手动处理。仍要继续吗？`,
+        `「${personLabel(avoidBlocked.value.nickname, avoidBlocked.value.wechatId)}」已在这个时段报名（#${live.id}）。加入回避名单不会取消他现有的报名，需要你手动处理。仍要继续吗？`,
         '该账号已报名',
       );
     }
@@ -630,7 +630,7 @@ async function exportCsv(): Promise<void> {
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false });
   };
   const money = (cent: number): string => (cent / 100).toFixed(2);
-  const header = ['登记ID', '微信号', '来源', '场次', '时段', '时段开始', '状态', '到场', '消耗积分', '基准积分', '减免积分', '权益券', '登记时间'];
+  const header = ['登记ID', '昵称', '微信号', '来源', '场次', '时段', '时段开始', '状态', '到场', '消耗积分', '基准积分', '减免积分', '权益券', '登记时间'];
   const all = await loadAllPages((p, size) => api.admin.registrations.list({
     page: p,
     pageSize: size,
@@ -644,6 +644,7 @@ async function exportCsv(): Promise<void> {
   }));
   const rows = all.list.map((r) => [
     r.id,
+    r.userNickname ?? '',
     r.userWechatId ?? '',
     metaOf(REGISTRATION_SOURCE, r.source).label,
     r.eventTitle ?? r.event?.title ?? '',
@@ -781,7 +782,8 @@ async function exportCsv(): Promise<void> {
                 :aria-label="`选择报名 ${r.id}`" />
             </td>
             <td class="px-3 py-2.5">
-              <p class="font-medium text-slate-900">{{ r.userWechatId ?? `#${r.userId}` }}</p>
+              <p class="font-medium text-slate-900">{{ personLabel(r.userNickname, r.userWechatId, r.userId, { withWechat: false }) }}</p>
+              <p class="text-xs text-slate-500">{{ r.userWechatId ? `微信号 ${r.userWechatId}` : `用户 #${r.userId}` }}</p>
               <p class="text-xs text-slate-500">
                 报名 #{{ r.id }}
                 <span class="ml-1 rounded px-1.5 py-0.5 text-[11px]" :class="metaOf(REGISTRATION_SOURCE, r.source).cls">{{ metaOf(REGISTRATION_SOURCE, r.source).label }}</span>
@@ -843,7 +845,8 @@ async function exportCsv(): Promise<void> {
             <input v-model="selected" type="checkbox" :value="r.id" class="mt-0.5 h-4 w-4 shrink-0 accent-blue-600"
               :aria-label="`选择报名 ${r.id}`" />
             <div class="min-w-0 flex-1">
-              <p class="clamp-1 font-medium text-slate-900">{{ r.userWechatId ?? `#${r.userId}` }}</p>
+              <p class="clamp-1 font-medium text-slate-900">{{ personLabel(r.userNickname, r.userWechatId, r.userId, { withWechat: false }) }}</p>
+              <p class="clamp-1 text-xs text-slate-500">{{ r.userWechatId ? `微信号 ${r.userWechatId}` : `用户 #${r.userId}` }}</p>
               <p class="mt-0.5 clamp-1 text-xs text-slate-500">{{ r.eventTitle ?? r.event?.title ?? `场次 #${r.eventId}` }}</p>
               <p class="mt-0.5 text-xs text-slate-500">{{ r.sessionLabel ?? r.session?.label ?? '—' }} · {{ points(r.feeCent) }}</p>
               <p class="text-xs text-slate-500">报名 #{{ r.id }} · {{ shortTime(r.createdAt) }}</p>

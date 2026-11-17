@@ -381,9 +381,9 @@ export function createApiClient(http: HttpClient) {
         /** 编辑用户：昵称/手机号/等级/有效期/角色/状态；微信号不可改 */
         update: (id: string, payload: AdminUpdateUserPayload) =>
           http.patch<{ id: string }>(ENDPOINTS.admin.user(id), payload),
-        /** 重置密码（仅管理员/运维账号）：返回一次性临时口令 */
+        /** 重置密码（仅管理员/运维账号）：返回一次性临时口令（带回昵称，弹窗要显示人名） */
         resetPassword: (payload: AdminResetPasswordPayload) =>
-          http.post<{ wechatId: string; temporaryPassword: string }>(ENDPOINTS.admin.userResetPassword, payload),
+          http.post<{ wechatId: string; nickname: string | null; temporaryPassword: string }>(ENDPOINTS.admin.userResetPassword, payload),
       },
 
       /** 注册邀请码：列表 / 批量生成 / 作废 */

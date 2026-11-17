@@ -10,7 +10,7 @@ import UserPicker from '../components/UserPicker.vue';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
 import AppPagination from '../components/AppPagination.vue';
 import { useUiStore } from '../stores/ui';
-import { points } from '../utils/labels';
+import { personLabel, points } from '../utils/labels';
 
 const ui = useUiStore();
 
@@ -186,7 +186,7 @@ async function submitCreate(): Promise<void> {
 
 async function revoke(row: AdminCouponDto): Promise<void> {
   try {
-    await ui.confirm(`确认作废「${row.title}」？作废后 ${row.userWechatId} 将无法再使用该券。`);
+    await ui.confirm(`确认作废「${row.title}」？作废后 ${personLabel(String(row.userNickname ?? ''), String(row.userWechatId ?? ''))} 将无法再使用该券。`);
   } catch {
     return;
   }
@@ -246,8 +246,8 @@ async function revoke(row: AdminCouponDto): Promise<void> {
           {{ row.minSpend }}
         </template>
         <template v-else-if="column.key === 'holder'">
-          <p class="text-slate-700">{{ row.userWechatId }}</p>
-          <p class="text-xs text-slate-500">{{ row.userNickname || '—' }}</p>
+          <p class="text-slate-700">{{ personLabel(String(row.userNickname ?? ''), String(row.userWechatId ?? ''), null, { withWechat: false }) }}</p>
+          <p class="text-xs text-slate-500">{{ row.userWechatId ? `微信号 ${row.userWechatId}` : '—' }}</p>
         </template>
         <template v-else-if="column.key === 'status'">
           <span class="rounded-full px-2 py-0.5 text-xs" :class="metaOf(String(row.status)).cls">{{ metaOf(String(row.status)).label }}</span>
@@ -274,7 +274,7 @@ async function revoke(row: AdminCouponDto): Promise<void> {
                 {{ row.type === 'DISCOUNT' ? '折扣券' : '减免券' }} · {{ faceText(row.raw as AdminCouponDto) }}
                 <span class="text-slate-500">· {{ row.minSpend }}</span>
               </p>
-              <p class="mt-0.5 text-xs text-slate-600">{{ row.userWechatId }}<span v-if="row.userNickname" class="text-slate-500"> · {{ row.userNickname }}</span></p>
+              <p class="mt-0.5 text-xs text-slate-600">{{ personLabel(String(row.userNickname ?? ''), String(row.userWechatId ?? '')) }}</p>
               <p class="text-xs text-slate-500">
                 {{ row.expiresAt ? `有效期至 ${row.expiresAtText}` : '长期有效' }}
                 <span v-if="row.usedAt"> · 已用于 {{ row.usedAtText }}</span>

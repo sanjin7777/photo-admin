@@ -70,7 +70,9 @@ async function logout(): Promise<void> {
 
     <div class="mt-6 space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
       <p class="text-xs text-slate-500">
-        当前账号 <span class="font-medium text-slate-800">{{ session.user?.wechatId ?? '—' }}</span>
+        当前账号
+        <span class="font-medium text-slate-800">{{ session.user?.nickname || session.user?.wechatId || '—' }}</span>
+        <span v-if="session.user?.nickname" class="ml-1 text-slate-500">（{{ session.user.wechatId }}）</span>
       </p>
       <label class="block">
         <span class="mb-1 block text-xs text-slate-500">当前密码</span>

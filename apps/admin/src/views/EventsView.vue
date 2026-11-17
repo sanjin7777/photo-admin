@@ -11,7 +11,7 @@ import { api } from '../api';
 import { useUiStore } from '../stores/ui';
 import ImageUploader from '../components/ImageUploader.vue';
 import PosterDesigner from '../components/PosterDesigner.vue';
-import { EVENT_STATUS, REGISTRATION_STATUS, VISIBILITY, metaOf, shortTime, toLocalInput, points } from '../utils/labels';
+import { EVENT_STATUS, REGISTRATION_STATUS, VISIBILITY, metaOf, personLabel, shortTime, toLocalInput, points } from '../utils/labels';
 import { emptyPage, loadAllPages } from '../utils/loadAll';
 import { DEFAULT_BRAND_TITLE, POSTER_STYLE_META, POSTER_STYLES, exportEventPoster, type PosterStyle } from '../utils/poster';
 import AppPagination from '../components/AppPagination.vue';
@@ -972,7 +972,7 @@ async function saveQr(): Promise<void> {
                   class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
                   :title="`${metaOf(REGISTRATION_STATUS, r.status).label} · ${shortTime(r.createdAt)}`"
                 >
-                  {{ r.userWechatId ?? `#${r.userId}` }}
+                  {{ personLabel(r.userNickname, r.userWechatId, r.userId, { withWechat: false }) }}
                 </span>
                 <span v-if="!regsOf(expandedEvent, s).length" class="text-xs text-slate-500">暂无报名</span>
               </div>

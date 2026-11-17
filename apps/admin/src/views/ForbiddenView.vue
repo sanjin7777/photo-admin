@@ -50,7 +50,7 @@ const reason = computed(() => {
     <p class="mt-2 text-sm leading-relaxed text-slate-500">{{ reason.detail }}</p>
 
     <p v-if="session.user" class="mt-3 text-xs text-slate-500">
-      当前账号：{{ session.user.wechatId }}（{{ session.user.nickname }}）
+      当前账号：{{ session.user.nickname || session.user.wechatId }}（{{ session.user.wechatId }}）
     </p>
 
     <RouterLink :to="reason.action"

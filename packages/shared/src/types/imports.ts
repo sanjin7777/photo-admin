@@ -59,12 +59,16 @@ export interface MemberImportCommitPayload {
 export interface MemberImportErrorDto {
   row: number;
   wechatId: string;
+  /** 该行的昵称（表里就有），失败明细里让运营直接认出是谁 */
+  nickname: string | null;
   reason: string;
 }
 
 /** 新建账号的一次性口头凭证；首次登录后必须修改密码 */
 export interface MemberImportCredentialDto {
   wechatId: string;
+  /** 新建账号的昵称（导入表里就有），回显时给运营认人的名字 */
+  nickname: string | null;
   temporaryPassword: string;
 }
 

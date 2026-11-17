@@ -114,8 +114,8 @@ export function mountInviteCodes(app: Express): void {
         params.push(q.status);
       }
       if (q.keyword) {
-        where.push('(ic.code LIKE ? OR creator.wechat_id LIKE ? OR used.wechat_id LIKE ?)');
-        params.push(`%${q.keyword}%`, `%${q.keyword}%`, `%${q.keyword}%`);
+        where.push('(ic.code LIKE ? OR creator.wechat_id LIKE ? OR creator.nickname LIKE ? OR used.wechat_id LIKE ? OR used.nickname LIKE ?)');
+        params.push(`%${q.keyword}%`, `%${q.keyword}%`, `%${q.keyword}%`, `%${q.keyword}%`, `%${q.keyword}%`);
       }
       const fromSql = `
         FROM invite_codes ic
@@ -124,7 +124,8 @@ export function mountInviteCodes(app: Express): void {
       const whereSql = `WHERE ${where.join(' AND ')}`;
 
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT ic.*, creator.wechat_id AS creator_wechat_id, used.wechat_id AS used_wechat_id
+        `SELECT ic.*, creator.wechat_id AS creator_wechat_id, creator.nickname AS creator_nickname,
+                used.wechat_id AS used_wechat_id, used.nickname AS used_nickname
          ${fromSql} ${whereSql}
          ORDER BY ic.id DESC LIMIT ? OFFSET ?`,
         [...params, pageSize, offset],
@@ -138,7 +139,9 @@ export function mountInviteCodes(app: Express): void {
         code: String(r.code),
         status: r.status as InviteCodeDto['status'],
         createdByWechatId: r.creator_wechat_id == null ? null : String(r.creator_wechat_id),
+        createdByNickname: r.creator_nickname == null ? null : String(r.creator_nickname),
         usedByWechatId: r.used_wechat_id == null ? null : String(r.used_wechat_id),
+        usedByNickname: r.used_nickname == null ? null : String(r.used_nickname),
         usedAt: isoOf(r.used_at),
         expiresAt: isoOf(r.expires_at),
         note: r.note == null ? null : String(r.note),

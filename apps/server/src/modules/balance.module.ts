@@ -406,8 +406,8 @@ export function mountBalance(app: Express): void {
     if (bizType) { conds.push('t.biz_type = ?'); params.push(bizType); }
     const kw = (keyword ?? '').trim();
     if (kw) {
-      conds.push('(u.wechat_id LIKE ? OR t.remark LIKE ?)');
-      params.push(`%${kw}%`, `%${kw}%`);
+      conds.push('(u.wechat_id LIKE ? OR u.nickname LIKE ? OR t.remark LIKE ?)');
+      params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`);
     }
     // 流水时间范围：本地自然日 → UTC 半开区间（end 用次日零点配 `<`）
     const range = localDayRangeUtc(dateFrom, dateTo);
@@ -415,7 +415,7 @@ export function mountBalance(app: Express): void {
     if (range.end) { conds.push('t.created_at < ?'); params.push(range.end); }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT t.*, u.wechat_id AS account_wechat_id
+      `SELECT t.*, u.wechat_id AS account_wechat_id, u.nickname AS account_nickname
        FROM balance_transactions t LEFT JOIN users u ON u.id = t.account_user_id
        ${where}
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,

@@ -11,7 +11,7 @@ import { useSessionStore } from '../stores/session';
 import ImageUploader from '../components/ImageUploader.vue';
 import ResponsiveTable from '../components/ResponsiveTable.vue';
 import AppPagination from '../components/AppPagination.vue';
-import { SOCIAL_PLATFORM } from '../utils/labels';
+import { SOCIAL_PLATFORM, personLabel } from '../utils/labels';
 import { emptyPage, loadAllPages } from '../utils/loadAll';
 
 const ui = useUiStore();
@@ -80,13 +80,13 @@ onMounted(async () => {
   await Promise.all([load(), loadUsers()]);
 });
 
-/** userId → 微信号：优先用服务端下发的绑定微信号，有用户列表时补充昵称 */
+/** userId → 展示名：优先用服务端下发的绑定昵称，其次微信号，有用户列表时补充 */
 const userLabel = computed(() => {
   const map = new Map<string, string>();
   for (const m of models.value) {
-    if (m.userId && m.boundWechatId) map.set(m.userId, m.boundWechatId);
+    if (m.userId) map.set(m.userId, personLabel(m.boundNickname, m.boundWechatId));
   }
-  for (const u of users.value) map.set(u.id, `${u.wechatId}（${u.nickname}）`);
+  for (const u of users.value) map.set(u.id, personLabel(u.nickname, u.wechatId, u.id));
   return map;
 });
 
@@ -106,7 +106,7 @@ const modelRows = computed(() => models.value.map((m) => ({
   raw: m,
   stageName: m.stageName,
   portfolioUrl: m.portfolioUrl,
-  bound: m.userId ? (userLabel.value.get(m.userId) ?? `#${m.userId}`) : '纯资料模特',
+  bound: m.userId ? (userLabel.value.get(m.userId) ?? personLabel(null, m.boundWechatId, m.userId)) : '纯资料模特',
   socialCount: m.socialAccounts.length,
   socialAccounts: m.socialAccounts,
   portrait: PORTRAIT_LABEL[m.portraitAuthStatus] ?? m.portraitAuthStatus,
@@ -301,7 +301,7 @@ const selectableUsers = computed(() => {
               <el-select v-if="!editingId" v-model="form.userId" placeholder="不绑定账号（纯资料模特）"
                 clearable filterable class="!w-full">
                 <el-option v-for="u in selectableUsers" :key="u.id"
-                  :label="`${u.wechatId}（${u.nickname}）`" :value="u.id" />
+                  :label="personLabel(u.nickname, u.wechatId)" :value="u.id" />
               </el-select>
               <el-input v-else :model-value="form.userId ? (userLabel.get(form.userId) ?? form.userId) : '未绑定登录账号'"
                 disabled />
