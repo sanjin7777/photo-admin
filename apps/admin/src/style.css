@@ -17,6 +17,16 @@ body { @apply bg-slate-100 text-slate-900 antialiased; }
 .el-dialog { max-width: 94vw; }
 .el-dialog__body { padding: 16px 20px; }
 
+/*
+ * 海报设计器是「工作台」而不是普通表单弹窗：里面三栏各自成块，
+ * 每一条竖向留白都会从画布高度里扣（画布要按可用高度反推宽度）。
+ * 所以这里单独把它的标题栏 / 正文 / 底栏留白收到最小，并且允许宽于通用 94vw。
+ */
+.poster-designer-dialog { max-width: 98vw; }
+.poster-designer-dialog .el-dialog__header { padding: 10px 16px 4px; }
+.poster-designer-dialog .el-dialog__body { padding: 8px 14px 4px; }
+.poster-designer-dialog .el-dialog__footer { padding: 4px 16px 8px; }
+
 @media (max-width: 640px) {
   /* 手机上别再用 8vh 的顶部留白，内容更容易一屏看完 */
   .el-dialog {

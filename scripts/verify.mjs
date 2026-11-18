@@ -905,8 +905,10 @@ assert.ok(designerSrc.includes('toFront') && designerSrc.includes('toBack'), '�
 assert.ok(designerSrc.includes('addBlock'), '设计器须支持添加区块');
 // 画布与热区必须同尺度：高度交给 aspect-ratio，宽度量准，否则框和内容会错位/拉伸
 assert.ok(designerSrc.includes('aspect-ratio: 1080 / 1620'), '画布容器须用 aspect-ratio 锁定比例，避免图片被拉伸');
-// 三栏之后高度预算统一走 --pd-pane-h（弹窗内可用高度），算式仍要与视口同源
-assert.ok(/max-width: calc\(var\(--pd-pane-h\) \* 0\.6667\)/.test(designerSrc), '画布须按可用高度限制宽度，保证整张一屏可见');
+// 三栏之后高度预算分两级：--pd-pane-h（弹窗内可用栏高）再扣掉画布栏自身的控制条得到 --pd-canvas-h
+// 画布只能吃 --pd-canvas-h，写回 --pd-pane-h 会让画布比可用空间高出控制条那一段，视口又出滚动条
+assert.ok(/max-width: calc\(var\(--pd-canvas-h\) \* 0\.6667\)/.test(designerSrc), '画布须按可用高度限制宽度，保证整张一屏可见');
+assert.ok(designerSrc.includes('--pd-canvas-h: calc(var(--pd-pane-h) -'), '须有 --pd-canvas-h 从栏高里扣掉画布栏控制条与提示行');
 assert.ok(designerSrc.includes('watch(stageViewportEl'), '须在画布视口元素出现后测量宽度（v-if 渲染时机；量视口而非内层，避免缩放正反馈）');
 assert.ok(designerSrc.includes('if (w > 0) baseW.value = w'), '量到 0 时不得覆盖已有基准宽度（baseW 为视口宽，zoom 另算）');
 // 预览必须画在模板里那个固定 canvas 上，不能替换 DOM 节点（替换会丢 scoped 样式，导致内容不跟框动）
@@ -2293,7 +2295,7 @@ assert.ok(designer58.includes('viewportH.value = h') && designer58.includes("win
   '基准高须随窗口尺寸更新，否则换屏幕后画布仍按旧高度算');
 assert.ok(/stageStyle = computed\(\(\) => \(\{[\s\S]*?maxWidth: `\$\{Math\.round\(stageW\.value\)\}px`/.test(designer58),
   '行内 max-width 须覆盖 CSS 里那条高度基准，否则点 + 号只让 stage 变宽、画布不动');
-assert.ok(designer58.includes('.poster-viewport') && designer58.includes('max-height: var(--pd-pane-h)'),
+assert.ok(designer58.includes('.poster-viewport') && designer58.includes('max-height: var(--pd-canvas-h)'),
   '画布视口须限高并自绘滚动条，放大后才能滚而不是撑破弹窗');
 assert.ok(designer58.includes('showSafeArea') && designer58.includes('showGrid') && designer58.includes('showFrames'),
   '须有安全边距 / 网格 / 区块框三个参考层开关');
@@ -2409,8 +2411,12 @@ assert.ok(poster60.indexOf('if (rotated) {') < poster60.indexOf('if (clipped) {'
 const designer60 = read('apps/admin/src/components/PosterDesigner.vue');
 assert.ok(designer60.includes('class="pd-workbench"') && designer60.includes('pd-pane-left') && designer60.includes('pd-pane-right'),
   '设计器须改成三栏：配色与图层在左、画布在中、选中属性在右');
-assert.ok(designer60.includes('.pd-pane-left') && designer60.includes('max-height: var(--pd-pane-h)'),
-  '左右两栏须各自限高滚动（用 --pd-pane-h 统一预算），否则整页还是会出滚动条、画布被顶出视口');
+assert.ok(/\.pd-pane-left \{[\s\S]{0,240}?height: var\(--pd-pane-h\);[\s\S]{0,80}?overflow: hidden;/.test(designer60),
+  '左栏须定高且自己不滚（整栏一条 + 图层列表一条 = 套娃滚动条），剩余高度全给图层卡内部滚');
+assert.ok(designer60.includes('.pd-pane-right') && designer60.includes('max-height: var(--pd-pane-h)'),
+  '右栏须限高滚动（用 --pd-pane-h 统一预算），否则整页还是会出滚动条、画布被顶出视口');
+assert.ok(designer60.includes('class="pd-layer-scroll"') && designer60.includes('function editableOf('),
+  '图层列表须有独立滚动容器，卡片高度不再压扁其它卡');
 assert.ok(designer60.includes('v-model="selected.rotation"') && designer60.includes('v-model="selected.letterSpacing"'),
   '属性面板须能直接调旋转与字间距');
 assert.ok(designer60.includes('function toggleLock(id: string)') && designer60.includes('@click.stop="toggleLock(b.id)"'),

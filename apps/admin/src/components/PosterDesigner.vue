@@ -78,19 +78,26 @@ const stageViewportEl = ref<HTMLDivElement | null>(null);
 const stageEl = ref<HTMLDivElement | null>(null);
 
 /**
- * 「100%」的基准宽 = min(容器宽, 按视口可高反推的宽)。
+ * 「100%」的基准宽 = min(容器宽, 按画布可用高度反推的宽)。
  *
  * 竖图 1080:1620，只按容器宽铺满会高过弹窗，底部价格与页脚永远要滚动才看得到。
- * 与 CSS 里 `--pd-pane-h` 那条是同一条算式，这里显式算出来，缩放才有稳定基准。
+ * 与 CSS 里 `--pd-canvas-h` 是同一个数，这里显式算出来，缩放才有稳定基准。
  *
- * 260 是画布栏里画布以外的开销（顶部工具条 + 画布控制条 + 快捷键说明 + 弹窗上下留白）。
- * 改成三栏后左右栏各自限高，画布若还按整屏高换算就会比左右栏高出一截，
- * 弹窗又冒出滚动条——所以这里必须跟 CSS 的 `--pd-pane-h` 对齐口径。
+ * 322 = 弹窗自身开销 204（上边距 + 标题栏 + 内边距 + 工具条 + 底栏）
+ *     + 画布栏内画布以外的 118（控制条 + 提示行）。
+ * 642 = CSS 里 `--pd-pane-h` 的上限 760 减掉那 118，超宽大屏上别把海报拉得过大。
+ *
+ * 这两个数必须与 CSS 同口径：一个给 CSS 定高度、一个给画布反推宽度，
+ * 只要差一点，画布就会把栏撑破，弹窗又冒出滚动条。
  */
-const PANE_CHROME = 348;
+const PANE_CHROME = 322;
+const PANE_MAX_CANVAS_H = 642;
+/** 视口自带 2px 内边距，画布高度要把这 4px 让出来，再多留 4px 给取整，否则视口永远多滚几像素 */
+const VIEWPORT_PADDING = 8;
 
 const fitW = computed(() => {
-  const byHeight = Math.max(200, (viewportH.value - PANE_CHROME) * (CANVAS_W / CANVAS_H));
+  const canvasH = Math.min(PANE_MAX_CANVAS_H, viewportH.value - PANE_CHROME) - VIEWPORT_PADDING;
+  const byHeight = Math.max(200, canvasH * (CANVAS_W / CANVAS_H));
   return Math.max(160, Math.min(baseW.value, byHeight));
 });
 
@@ -1361,7 +1368,12 @@ function labelOf(type: PosterBlockType): string {
             </div>
           </template>
 
-          <div class="grid grid-cols-3 gap-2">
+          <!--
+            色卡保持 3×2 六宫格，但把预览图压到 28px、去掉块间说明段：
+            左栏高度是「弹窗可用高度 - 图层卡」的余额，配色卡多占 40px 就直接多出一条滚动条。
+            选中配色的一句 hint 收进色卡 title（悬停可看），不再常驻占两行。
+          -->
+          <div class="grid grid-cols-3 gap-1.5">
             <button
               v-for="t in THEME_LIST"
               :key="t.key"
@@ -1381,51 +1393,44 @@ function labelOf(type: PosterBlockType): string {
             </button>
           </div>
 
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            {{ activeThemeKey ? THEME_LIST.find(t => t.key === activeThemeKey)?.hint : '自定义配色：三个颜色可分别微调' }}
-          </p>
+          <el-divider class="!my-2" />
 
-          <el-divider class="!my-3" />
-
-          <div class="space-y-2">
-            <div class="pd-colorrow">
-              <span class="pd-colorname">底色</span>
+          <!--
+            三色微调并成一行：原来每个色占一整行（名字 + 取色器 + 色值），
+            三行就是 100px 左右，全部挪到一行后左栏正好不再溢出。
+          -->
+          <div class="pd-colorrows">
+            <div class="pd-colorrow" title="底色">
               <el-color-picker
                 :model-value="theme.bg"
                 size="small"
                 :predefine="['#080a0e', '#0c0a09', '#f6f4ef', '#071310', '#0d0a1a', '#061019']"
                 @update:model-value="(v: string | null) => setThemeColor('bg', v)"
               />
-              <code class="pd-colorcode">{{ theme.bg }}</code>
+              <span class="pd-colorname">底色</span>
             </div>
-            <div class="pd-colorrow">
-              <span class="pd-colorname">主色</span>
+            <div class="pd-colorrow" title="主色">
               <el-color-picker
                 :model-value="theme.accent"
                 size="small"
                 :predefine="['#f43f5e', '#d4a537', '#dc2626', '#34d399', '#a78bfa', '#38bdf8', '#fb923c', '#22d3ee']"
                 @update:model-value="(v: string | null) => setThemeColor('accent', v)"
               />
-              <code class="pd-colorcode">{{ theme.accent }}</code>
+              <span class="pd-colorname">主色</span>
             </div>
-            <div class="pd-colorrow">
-              <span class="pd-colorname">正文</span>
+            <div class="pd-colorrow" title="正文">
               <el-color-picker
                 :model-value="theme.text"
                 size="small"
                 :predefine="['#ffffff', '#faf7f0', '#1c1917', '#f0fdf4', '#f5f3ff', '#f0f9ff', '#0f172a']"
                 @update:model-value="(v: string | null) => setThemeColor('text', v)"
               />
-              <code class="pd-colorcode">{{ theme.text }}</code>
+              <span class="pd-colorname">正文</span>
             </div>
           </div>
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            次要文字、三档价格、图片蒙层与描边都由这三个色自动派生；
-            浅色底会自动改用深色文字与提亮蒙层，不会出现「白底白字」。
-          </p>
         </el-card>
 
-        <el-card shadow="never" class="mb-3 pd-card">
+        <el-card shadow="never" class="mb-3 pd-card pd-layer-card">
           <template #header>
             <div class="flex items-center justify-between">
               <span class="text-sm font-medium text-slate-800">区块图层</span>
@@ -1435,7 +1440,13 @@ function labelOf(type: PosterBlockType): string {
               </div>
             </div>
           </template>
-          <div class="pd-layers max-h-[240px] space-y-1 overflow-y-auto pr-1">
+          <!--
+            列表本身可以滚，但**卡片与左栏都不滚**：
+            卡片吃掉左栏剩下的高度，列表再在卡片内部滚，这样左边永远只有一条紧贴列表的细滚动条，
+            而不是「整栏一条 + 卡片里又一条」。行高压到 26px、间距 4px，13 个区块时通常一条都不用出。
+          -->
+          <div class="pd-layer-scroll">
+            <div class="pd-layers space-y-1 pr-1">
             <div
               v-for="(b, i) in orderedBlocks"
               :key="b.id"
@@ -1488,10 +1499,11 @@ function labelOf(type: PosterBlockType): string {
                   @click.stop="moveLayer(b.id, -1)"
                 >▼</button>
               </span>
+              </div>
             </div>
           </div>
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            列表自下而上就是叠放顺序；勾选框控制该区块是否出现在海报上。
+          <p class="mt-1.5 shrink-0 text-[11px] leading-4 text-slate-500">
+            自下而上即叠放顺序；勾选框控制是否出现在海报上。
           </p>
         </el-card>
 
@@ -1526,6 +1538,27 @@ function labelOf(type: PosterBlockType): string {
               网格
             </el-button>
           </el-tooltip>
+
+          <!--
+            「添加区块」从右栏搬到这里：它是一张常驻卡（约 90~150px），
+            而右栏可用高度要留给属性面板——属性面板本身就是最长的那张卡。
+            放进控制条后，加区块随时可点，右栏则不再被它挤出一条滚动条。
+          -->
+          <el-dropdown trigger="click" @command="(t: PosterBlockType) => addBlock(t)">
+            <el-button size="small" text bg>
+              + 添加区块
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="t in addableTypes" :key="t" :command="t">
+                  {{ labelOf(t) }}
+                </el-dropdown-item>
+                <el-dropdown-item v-if="!addableTypes.length" disabled>
+                  所有区块都在画布上了
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
 
           <div class="flex-1" />
 
@@ -1608,16 +1641,21 @@ function labelOf(type: PosterBlockType): string {
             </div>
           </div>
         </div>
-        <p class="mt-2 text-[11px] leading-5 text-slate-500">
-          拖动区块移动，拖四角缩放，方向键微调（Shift 加速）；
-          <kbd class="pd-kbd">Shift</kbd>+点击多选后可对齐 / 分布 / 整组拖动，
-          <kbd class="pd-kbd">Alt</kbd>+点击在重叠区块间循环选中。
-          快捷键：<kbd class="pd-kbd">Ctrl+Z</kbd> 撤销、
-          <kbd class="pd-kbd">Ctrl+D</kbd> 复制、
-          <kbd class="pd-kbd">Ctrl+C/V</kbd> 复制粘贴、
-          <kbd class="pd-kbd">Ctrl+A</kbd> 全选、
-          <kbd class="pd-kbd">Ctrl+S</kbd> 保存、
-          <kbd class="pd-kbd">Delete</kbd> 删除。
+        <!--
+          快捷键提示压成一行 + 悬停展开：原来这段常驻 3 行（约 63px），
+          而弹窗里每 1px 都是从画布高度里扣的。
+        -->
+        <p class="mt-1.5 text-[11px] leading-4 text-slate-500">
+          拖动移动 · 四角缩放 · 方向键微调 ·
+          <kbd class="pd-kbd">Shift</kbd> 多选 ·
+          <el-tooltip placement="bottom" :show-after="300">
+            <template #content>
+              撤销 Ctrl+Z · 复制 Ctrl+D · 复制粘贴 Ctrl+C/V ·
+              全选 Ctrl+A · 保存 Ctrl+S · 删除 Delete<br>
+              <kbd class="pd-kbd">Alt</kbd>+点击在重叠区块间循环选中
+            </template>
+            <span class="cursor-help underline decoration-dotted">全部快捷键</span>
+          </el-tooltip>
         </p>
       </div>
 
@@ -1651,7 +1689,12 @@ function labelOf(type: PosterBlockType): string {
           </p>
         </el-card>
 
-        <el-card v-if="selected" shadow="never" class="mb-3">
+        <!--
+          多选时右栏只留对齐/分布卡：属性卡在右栏要 600px，两张卡叠在一起必然出滚动条，
+          而多选的意图就是对齐与统一尺寸——单个区块的坐标、字号这时候反而会被误改。
+          画布上方的「复制组 / 删除组 / 取消选择」仍然可用。
+        -->
+        <el-card v-if="selected && multiCount <= 1" shadow="never" class="mb-3">
           <template #header>
             <div class="flex items-center justify-between">
               <span class="text-sm font-medium text-slate-800">{{ labelOf(selected.type) }}</span>
@@ -1866,22 +1909,14 @@ function labelOf(type: PosterBlockType): string {
           </template>
         </el-card>
 
-        <el-card shadow="never">
-          <template #header>
-            <span class="text-sm font-medium text-slate-800">添加区块</span>
-          </template>
-          <div class="flex flex-wrap gap-1.5">
-            <el-button
-              v-for="t in addableTypes"
-              :key="t"
-              size="small"
-              @click="addBlock(t)"
-            >
-              + {{ labelOf(t) }}
-            </el-button>
-          </div>
-          <p v-if="!addableTypes.length" class="text-[11px] text-slate-400">
-            所有区块都在画布上了；可以调出隐藏区块或添加自定义文字。
+        <!--
+          没有任何选中区块时的占位：右栏原来是空的，
+          只留下那句「添加区块」卡——它已经搬到画布控制条上了。
+        -->
+        <el-card v-if="!selected && multiCount <= 1" shadow="never" class="pd-card">
+          <p class="text-[11px] leading-5 text-slate-500">
+            点击画布上的区块来调整它的位置、文字与效果；
+            <kbd class="pd-kbd">Shift</kbd>+点击可多选。
           </p>
         </el-card>
       </aside>
@@ -2066,12 +2101,55 @@ function labelOf(type: PosterBlockType): string {
 
 /* ---------------- 卡片 ---------------- */
 
+/**
+ * 卡片内边距比 Element 默认值更紧：设计器是工作台，不是表单页。
+ * 每张卡省 6~8px，三张卡就是 20px+，全部变成画布高度。
+ */
 .pd-card :deep(.el-card__header) {
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 .pd-card :deep(.el-card__body) {
-  padding: 12px 14px;
+  padding: 10px 12px;
+}
+
+/**
+ * 卡片不许被压扁。
+ *
+ * 栏是 flex 列 + max-height，卡片默认 `flex: 0 1 auto` 会被压缩到栏高以下，
+ * el-card__body 自己又带 overflow:auto —— 于是每张卡内部各出一条很短的滚动条，
+ * 看起来比原来的一条栏滚动条更糟。改成不许收缩，内容超出就整栏滚。
+ */
+.pd-pane :deep(.el-card):not(.pd-layer-card) {
+  flex: 0 0 auto;
+}
+
+/**
+ * 右栏属性卡的竖向留白收紧。
+ *
+ * 属性卡是最长的一张（约 676px 自然高），而三栏可用高度只有 613px 左右。
+ * 里面真正有用的控件只占一半，剩下全是分隔线与表单项的 margin：
+ * 三条分隔线各 24px 上下留白、六个表单项各 8px —— 挤掉这些就够了，不必缩小控件本身。
+ */
+.pd-pane-right :deep(.el-divider--horizontal) {
+  margin: 2px 0 !important;
+}
+
+.pd-pane-right :deep(.el-form-item) {
+  margin-bottom: 2px;
+}
+
+.pd-pane-right :deep(.el-form-item__label) {
+  padding-bottom: 2px;
+}
+
+/** 卡片的 mb-3 在栏里等于白送一条滚动条：栏内最后一张卡不需要下外边距 */
+.pd-pane-right :deep(.el-card) {
+  margin-bottom: 0;
+}
+
+.pd-pane-right :deep(.el-card__body) {
+  padding: 6px 10px;
 }
 
 /* ---------------- 三栏工作台 ----------------
@@ -2090,14 +2168,24 @@ function labelOf(type: PosterBlockType): string {
 }
 
 /**
- * 三栏的统一高度预算：画布高度与左右栏高度都从这里取，保证三者齐平。
+ * 三栏的统一高度预算。
  *
- * 340px 是弹窗自身的开销（4vh 上边距 + 标题栏 + 底部按钮栏 + 顶部工具条 + 画布控制条 + 快捷键说明）。
- * 不留给它，画布按容纳宽度撑开后总高就会超出视口，弹窗又冒出整页滚动条。
- * 上限 700px 是为了在超宽大屏上别把海报拉得过大。
+ * 之前的算法是「整屏高 - 250」，但那 250 只估了画布栏以外的开销，
+ * 结果画布按预算撑满后，画布栏还要再加上控制条与提示行，整个弹窗比视口高 68px，
+ * 浏览器就给出整页滚动条——用户看到的「左右两条」其实是同一个整页滚动条的两个位置。
+ *
+ * 现在拆成三个数，口径一一对应（实测于 1264×805 视口，改完弹窗 793px 高、整页不滚）：
+ *   --pd-chrome   弹窗自身开销 204：上边距 20 + 标题栏 38 + 内边距 + 工具条 42 + 底栏 44
+ *   --pd-pane-h   三栏可用高度（左右栏 max-height、画布栏总高都取它）
+ *   --pd-canvas-h 画布本身的高度 = 栏高 - 118（控制条 81 + 提示行 37）
+ *
+ * script 里的 PANE_CHROME 必须让「100dvh - PANE_CHROME」等于这里的 --pd-canvas-h，
+ * 否则画布反推出来的宽度会把栏撑破，滚动条又回来。
  */
 .poster-designer {
-  --pd-pane-h: min(700px, calc(100dvh - 340px));
+  --pd-chrome: 204px;
+  --pd-pane-h: min(760px, calc(100dvh - var(--pd-chrome)));
+  --pd-canvas-h: calc(var(--pd-pane-h) - 118px);
 }
 .pd-pane {
   display: flex;
@@ -2116,12 +2204,18 @@ function labelOf(type: PosterBlockType): string {
     align-items: flex-start;
   }
 
+  /**
+   * 左栏：固定高度、不自己滚。
+   *
+   * 早先是 max-height + overflow-y:auto，于是「整栏一条滚动条」和「图层列表里又一条」并存，
+   * 用户看到的就是两条套娃。现在栏高定死、overflow 关掉，
+   * 剩下的高度全给图层卡，只让列表内部滚——视觉上永远只有一条。
+   */
   .pd-pane-left {
     width: 268px;
     flex: 0 0 268px;
-    max-height: var(--pd-pane-h);
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    height: var(--pd-pane-h);
+    overflow: hidden;
     padding-right: 2px;
   }
 
@@ -2138,6 +2232,35 @@ function labelOf(type: PosterBlockType): string {
     overscroll-behavior: contain;
     padding-left: 2px;
   }
+}
+
+/**
+ * 图层卡吃掉左栏剩余高度，列表在卡片内部滚。
+ *
+ * 需要 card / card__body / 内层容器三级都放开 flex 才能把「剩余高度」一路传到列表上：
+ * el-card 默认块级、el-card__body 带 overflow:auto，中间任一级不配合，列表就拿不到高度约束。
+ */
+.pd-layer-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.pd-layer-card :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pd-layer-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* ---------------- 配色色卡 ---------------- */
@@ -2167,54 +2290,56 @@ function labelOf(type: PosterBlockType): string {
 /**
  * 色卡缩略图：不是纯色块，而是「这张海报长什么样」的抽象版——
  * 一条主色竖条 + 两行正文 + 一个价格胶囊，换配色时能一眼看出差异。
+ * 28px 是「还看得出层次」和「别把左栏撑出滚动条」的折中：
+ * 原 44px × 两行 = 96px，仅配色卡就吃掉左栏 456px 里的一大半。
  */
 .pd-swatch-art {
   position: relative;
   display: block;
-  height: 44px;
-  border-radius: 7px;
+  height: 28px;
+  border-radius: 6px;
   overflow: hidden;
 }
 
 .pd-swatch-bar {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  width: 3px;
-  height: 12px;
+  top: 5px;
+  left: 6px;
+  width: 2px;
+  height: 8px;
   border-radius: 2px;
 }
 
 .pd-swatch-line {
   position: absolute;
-  left: 8px;
-  height: 3px;
+  left: 6px;
+  height: 2px;
   border-radius: 2px;
 }
 
 .pd-swatch-line:nth-of-type(2) {
-  top: 24px;
+  top: 16px;
   width: 60%;
 }
 
 .pd-swatch-line.short {
-  top: 31px;
+  top: 21px;
   width: 38%;
 }
 
 .pd-swatch-dot {
   position: absolute;
-  right: 7px;
-  bottom: 7px;
-  width: 16px;
-  height: 9px;
+  right: 5px;
+  bottom: 5px;
+  width: 12px;
+  height: 7px;
   border-radius: 3px;
   opacity: 0.85;
 }
 
 .pd-swatch-name {
   font-size: 11px;
-  line-height: 16px;
+  line-height: 14px;
   color: var(--pd-text);
   text-align: center;
 }
@@ -2224,16 +2349,27 @@ function labelOf(type: PosterBlockType): string {
   font-weight: 600;
 }
 
+/**
+ * 三色微调并排一行：原来每色一行（名字 + 取色器 + 色值）约 34px，
+ * 三行 100px 全从画布高度里扣。并排后省下的高度直接变成画布。
+ */
+.pd-colorrows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .pd-colorrow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 5px;
 }
 
 .pd-colorname {
-  width: 32px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--pd-muted);
+  white-space: nowrap;
 }
 
 .pd-colorcode {
@@ -2350,21 +2486,16 @@ function labelOf(type: PosterBlockType): string {
 /* ---------------- 画布视口与参考层 ---------------- */
 
 /**
- * 画布视口：缩放后画布会超出这里，由它出滚动条。
- * 关键是**它的宽度不随 zoom 变**，measure() 量的就是它，
- * 否则「量宽 → 放大 → 再量到更大的宽」会形成正反馈把画布撑爆。
- */
-/**
- * 视口高度上限：与 `.poster-stage` 共用 `--pd-pane-h`。
+ * 视口高度上限：用 `--pd-canvas-h`（栏高减去控制条与提示行），而不是栏高本身。
  *
  * 早先这里写的是 `100vh - 260px`，而 stage 的宽度上限是 `(100vh - 300px) * 0.6667`，
  * 两者差着 40px 的口径 —— 三栏模式下这会多出一条没意义的滚动条。
- * 现在高度统一：阶段按 `--pd-pane-h * 0.6667` 定宽，视口按 `--pd-pane-h` 定高，
+ * 现在口径统一成一个变量：stage 按 `--pd-canvas-h * 0.6667` 定宽，视口按 `--pd-canvas-h` 定高，
  * 100% 时海报正好铺满、放大后才出滚动条。
  */
 .poster-viewport {
   overflow: auto;
-  max-height: var(--pd-pane-h);
+  max-height: var(--pd-canvas-h);
   padding: 2px;
   border-radius: 14px;
   background: repeating-conic-gradient(#f1f3f8 0% 25%, #e9ecf3 0% 50%) 0 0 / 16px 16px;
@@ -2457,14 +2588,14 @@ function labelOf(type: PosterBlockType): string {
 .poster-stage {
   width: 100%;
   /**
-   * 让整张海报一屏放得下：按**三栏公用高度预算**反推最大宽度，再居中。
+   * 让整张海报一屏放得下：按**画布可用高度**反推最大宽度，再居中。
    *
    * 预览是 1080:1620 的竖图。早先这里写的是 `(100vh - 300px) * 0.6667`，
    * 但那 300px 是「只有画布一栏」时代的估计；改成三栏后左右栏各自限高，
    * 画布若仍按视口高换算就会比左右栏高出一截，把弹窗顶出滚动条。
-   * 改成跟 `--pd-pane-h` 同一个来源，三者天然齐平。
+   * 现在跟视口共用 `--pd-canvas-h`（栏高已扣掉控制条与提示行），三者天然齐平。
    */
-  max-width: calc(var(--pd-pane-h) * 0.6667);
+  max-width: calc(var(--pd-canvas-h) * 0.6667);
   margin-left: auto;
   margin-right: auto;
 }

@@ -1303,8 +1303,8 @@ async function saveQr(): Promise<void> {
     <el-dialog
       v-model="designerOpen"
       title="海报设计器"
-      width="min(1180px, 96vw)"
-      top="4vh"
+      width="min(1560px, 98vw)"
+      top="2.5vh"
       destroy-on-close
       class="poster-designer-dialog"
     >
