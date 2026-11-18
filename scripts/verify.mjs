@@ -905,7 +905,8 @@ assert.ok(designerSrc.includes('toFront') && designerSrc.includes('toBack'), '�
 assert.ok(designerSrc.includes('addBlock'), '设计器须支持添加区块');
 // 画布与热区必须同尺度：高度交给 aspect-ratio，宽度量准，否则框和内容会错位/拉伸
 assert.ok(designerSrc.includes('aspect-ratio: 1080 / 1620'), '画布容器须用 aspect-ratio 锁定比例，避免图片被拉伸');
-assert.ok(/max-width: calc\(\(100vh - \d+px\) \* 0\.6667\)/.test(designerSrc), '画布须按视口高度限制宽度，保证整张一屏可见');
+// 三栏之后高度预算统一走 --pd-pane-h（弹窗内可用高度），算式仍要与视口同源
+assert.ok(/max-width: calc\(var\(--pd-pane-h\) \* 0\.6667\)/.test(designerSrc), '画布须按可用高度限制宽度，保证整张一屏可见');
 assert.ok(designerSrc.includes('watch(stageViewportEl'), '须在画布视口元素出现后测量宽度（v-if 渲染时机；量视口而非内层，避免缩放正反馈）');
 assert.ok(designerSrc.includes('if (w > 0) baseW.value = w'), '量到 0 时不得覆盖已有基准宽度（baseW 为视口宽，zoom 另算）');
 // 预览必须画在模板里那个固定 canvas 上，不能替换 DOM 节点（替换会丢 scoped 样式，导致内容不跟框动）
@@ -2292,7 +2293,7 @@ assert.ok(designer58.includes('viewportH.value = h') && designer58.includes("win
   '基准高须随窗口尺寸更新，否则换屏幕后画布仍按旧高度算');
 assert.ok(/stageStyle = computed\(\(\) => \(\{[\s\S]*?maxWidth: `\$\{Math\.round\(stageW\.value\)\}px`/.test(designer58),
   '行内 max-width 须覆盖 CSS 里那条高度基准，否则点 + 号只让 stage 变宽、画布不动');
-assert.ok(designer58.includes('.poster-viewport') && designer58.includes('max-height: calc(100vh - 260px)'),
+assert.ok(designer58.includes('.poster-viewport') && designer58.includes('max-height: var(--pd-pane-h)'),
   '画布视口须限高并自绘滚动条，放大后才能滚而不是撑破弹窗');
 assert.ok(designer58.includes('showSafeArea') && designer58.includes('showGrid') && designer58.includes('showFrames'),
   '须有安全边距 / 网格 / 区块框三个参考层开关');
@@ -2371,4 +2372,56 @@ assert.ok(designer59.includes('.pd-overflow-row') && designer59.includes('.pd-ov
 assert.ok(designer59.includes('sessions: { x: 72, y: 1200, w: 528, h: 192 }'),
   '新增场次区块的默认高度也须是 192，否则一加出来就缺场');
 
-console.log(`VERIFY_OK: 59 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页/昵称必显/幂等重放与冲突详情透传/普通用户待支付流程/近期排序与游客信息隐藏/取消后收款拦截与线下退款提示/每场人数比/海报多配色与设计器工作台/场次高度自适应与溢出修复；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);
+/* ---------- 第 60 组：文字排版/效果/锁定 + 设计器三栏布局 ---------- */
+
+const sch60 = read('packages/shared/src/schemas/poster.ts');
+assert.ok(sch60.includes('rotation: z.number().int().min(-180).max(180).default(0)'),
+  '旋转必须限定 -180..180 的整数：小数会在 JSON 里留下 12.000000000000002');
+assert.ok(sch60.includes("fontWeight: z.union([z.literal(400), z.literal(600), z.literal(800)]).nullable().default(null)"),
+  '字重只开放三档：中文黑体在浏览器里只有这三档能明显分辨，给 100..900 全是同样的字形');
+assert.ok(sch60.includes('letterSpacing: z.number().int().min(-6).max(24).nullable().default(null)'),
+  '字间距须 nullable：null 表示「用渲染器给的默认值」，写死 0 会把标题默认的收紧字距废掉');
+assert.ok(sch60.includes('lineHeightPct: z.number().int().min(80).max(260).nullable().default(null)'),
+  '行高存百分比而不是 px：存 px 时一改字号多行就会挤成一坨');
+assert.ok(sch60.includes('strokeWidth: z.number().int().min(0).max(12).default(0)') && sch60.includes('bgColor:'),
+  '描边宽度与底板色须独立于文字色，才能「只描边不改字色」');
+assert.ok(sch60.includes('locked: z.boolean().default(false)'),
+  '区块锁定须落进版式 JSON：否则刷新页面锁定就丢了');
+
+const poster60 = read('apps/admin/src/utils/poster.ts');
+assert.ok(/function setFont\([\s\S]{0,200}?block: PosterBlockDto,?\s*\): void/.test(poster60),
+  '字号与字重必须在同一个入口统一设置，散落各处必然漏掉新增区块');
+assert.ok(poster60.includes("spacing === 0 ? '0px'") && poster60.includes('letterSpacing?: string }'),
+  '字间距优先用原生 letterSpacing（逐字绘制会丢中文连字与英文 kerning）');
+assert.ok(poster60.includes('function applyTextEffects(') && poster60.includes('function clearTextEffects('),
+  '文字效果须有统一的开与关：只开不关会让后续区块连带吃到描边与阴影');
+assert.ok(/function paintText\([\s\S]{0,600}?strokeText[\s\S]{0,200}?fillText/.test(poster60),
+  '必须先描边再填充：反过来会把字形内部削细一圈，中文小字尤其明显');
+assert.ok(poster60.includes('function fillTracked(') && poster60.includes('function trackedWidth('),
+  '有字间距时不能直接用 fillText，否则 textAlign 对不齐');
+assert.ok(poster60.includes('function lineHeightOf('),
+  '行高须走统一换算，各区块各写一份比值迟早不一致');
+assert.ok(/const rotation = block\.rotation \?\? 0;[\s\S]{0,400}?ctx\.rotate\(\(rotation \* Math\.PI\) \/ 180\)/.test(poster60),
+  '渲染器须真的把 rotation 应用到画布');
+assert.ok(poster60.indexOf('if (rotated) {') < poster60.indexOf('if (clipped) {'),
+  '旋转必须在裁切之前 save：顺序反了裁切矩形不跟着转，斜排文字会被直边切掉');
+
+const designer60 = read('apps/admin/src/components/PosterDesigner.vue');
+assert.ok(designer60.includes('class="pd-workbench"') && designer60.includes('pd-pane-left') && designer60.includes('pd-pane-right'),
+  '设计器须改成三栏：配色与图层在左、画布在中、选中属性在右');
+assert.ok(designer60.includes('.pd-pane-left') && designer60.includes('max-height: var(--pd-pane-h)'),
+  '左右两栏须各自限高滚动（用 --pd-pane-h 统一预算），否则整页还是会出滚动条、画布被顶出视口');
+assert.ok(designer60.includes('v-model="selected.rotation"') && designer60.includes('v-model="selected.letterSpacing"'),
+  '属性面板须能直接调旋转与字间距');
+assert.ok(designer60.includes('function toggleLock(id: string)') && designer60.includes('@click.stop="toggleLock(b.id)"'),
+  '图层行须能一键锁定/解锁，不然解个锁要翻到右栏找');
+assert.ok(/if \(block\.locked\) \{[\s\S]{0,200}?selectOnly\(block\.id\);[\s\S]{0,40}?return;/.test(designer60),
+  '锁定只拦几何变更不拦选中：锁上之后还得能点开面板解锁、改文字');
+assert.ok(designer60.includes('function editableOf(') && designer60.includes('filter((b) => !b.locked)'),
+  '对齐/分布/微调须跳过锁定区块，否则「锁定」形同虚设');
+assert.ok(designer60.includes("'is-locked': b.locked") && designer60.includes('.poster-hotspot.is-locked'),
+  '锁定的区块在画布上要有可辨识的态（框直接收起，只留透明命中区）');
+assert.ok(!designer60.includes('lg:w-[336px]'),
+  '原来的右侧单列容器必须拆掉，否则三栏之外还挂着一列');
+
+console.log(`VERIFY_OK: 60 组断言通过（角色边界/导入/Mock/三块图区/模特独立建档/时段冲突/枚举对齐/邀请码/多名额/手机号移除/会员授予/图片上传/乱码修复/图片诊断/编辑弹窗回填/调账一步化/重置密码/3001修复/改密与强制改密/退款资金链与协议与限流/投票开放与状态回填/投票解耦与流水与报名展示/海报导出与二维码配置/网站与客服二维码/海报标题配置/前台双 Tab 与截止只读/优惠券/积分化与协议同意/注册隐藏与退款场次与权限日志/手动录入与后台易用性/后台整体优化/下拉选人与默认值与时段名额与导出/赠送积分/报名来源与退款渠道/投票图片灯箱/人工报名门槛/模特身高三围会员可见/场景库/会话延长与无操作提示/列表行内门槛与客户端票数手动刷新/投票直接关联模特与全系统去会员诱导/投票结果缩略图与名额名单弹窗/后台自助改密/场次模特照片取自模特库/海报设计器与版式持久化/双模特各自照片与服装/部署打包路径/工程化与真分页/昵称必显/幂等重放与冲突详情透传/普通用户待支付流程/近期排序与游客信息隐藏/取消后收款拦截与线下退款提示/每场人数比/海报多配色与设计器工作台/场次高度自适应与溢出修复/文字排版与效果与锁定及三栏布局；DDL ${tables.length} 表 / 种子 ${seedTables.length} 表一致；双端能力名对齐`);

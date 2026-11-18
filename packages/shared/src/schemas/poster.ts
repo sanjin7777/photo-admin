@@ -99,6 +99,56 @@ export const posterBlockSchema = z
     modelIndex: z.number().int().min(0).max(19).default(0),
     /** 图片填充方式：cover 裁切铺满，contain 完整显示留白 */
     fit: z.enum(['cover', 'contain']).nullable().default(null),
+
+    /* ---------------- 排版：旋转与文字度量 ---------------- */
+
+    /**
+     * 旋转角度（度，顺时针为正，围绕区块中心）。
+     *
+     * 为什么是整数而不是浮点：设计器里用方向键调、用滑杆拉，
+     * 浮点会存进 JSON 里出现 12.000000000000002 这种值，
+     * 既难读也难在导出/导入之间保持稳定。
+     */
+    rotation: z.number().int().min(-180).max(180).default(0),
+    /**
+     * 字重：只给三档。
+     *
+     * 中文黑体在浏览器里能明显分辨的就是这三档（细/中/特粗），
+     * 再多档位要么是同一条字形加粗看不出差别，要么在部分系统上回退成同一档。
+     */
+    fontWeight: z.union([z.literal(400), z.literal(600), z.literal(800)]).nullable().default(null),
+    /** 字间距（px）：负值收紧、正值撑开；留空按渲染器默认 */
+    letterSpacing: z.number().int().min(-6).max(24).nullable().default(null),
+    /**
+     * 行高（字号百分比，134 即 1.34 倍）。
+     *
+     * 存百分比而不是 px：改字号时行距应该等比跟着变，
+     * 存 px 的话把字号从 40 调到 60 会把多行文字挤成一坨。
+     */
+    lineHeightPct: z.number().int().min(80).max(260).nullable().default(null),
+
+    /* ---------------- 文字效果 ---------------- */
+
+    /** 文字投影开关：花哨背景上开着更易读，纯色底上关掉更干净 */
+    shadow: z.boolean().default(true),
+    /** 描边色：与 strokeWidth 配合，做出「描边字」效果 */
+    strokeColor: z.string().trim().max(24).nullable().default(null),
+    /** 描边宽度（px）；0 表示不描边 */
+    strokeWidth: z.number().int().min(0).max(12).default(0),
+    /**
+     * 文字底板（像「支持代拍」那种胶囊底）。
+     *
+     * 与 color 分开存：color 是字色，bgColor 是底色，
+     * 两者都要能单独关掉——只给其中一个时另一种保持默认才有意义。
+     */
+    bgColor: z.string().trim().max(24).nullable().default(null),
+
+    /**
+     * 锁定：位置与尺寸不再响应拖拽/缩放，防止排版定型后被误拖。
+     *
+     * 仍然可选中（否则没法解锁），只是框线隐藏、不可拖动。
+     */
+    locked: z.boolean().default(false),
   })
   .strict();
 
@@ -213,7 +263,7 @@ export type PosterLayoutInput = z.input<typeof posterLayoutSchema>;
 
 /* ---------------- 预设版式 ---------------- */
 
-/** 造一个字段齐全的区块，避免每处预设都手写 11 个 null */
+/** 造一个字段齐全的区块，避免每处预设都手写十几个 null */
 function mk(
   type: PosterBlockType,
   x: number,
@@ -238,6 +288,15 @@ function mk(
     imageUrl: null,
     fit: null,
     modelIndex: 0,
+    rotation: 0,
+    fontWeight: null,
+    letterSpacing: null,
+    lineHeightPct: null,
+    shadow: true,
+    strokeColor: null,
+    strokeWidth: 0,
+    bgColor: null,
+    locked: false,
     ...extra,
   };
 }

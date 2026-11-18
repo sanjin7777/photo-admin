@@ -189,6 +189,143 @@ function px(size: number, weight: number | string = 400): string {
   return `${weight} ${size}px ${FONT}`;
 }
 
+/* ==================================================================== */
+/*                    文字排版与效果（区块级覆盖）                        */
+/* ==================================================================== */
+
+/**
+ * 按区块的排版设置装配字体。
+ *
+ * 只提供三档字重（400/600/800）：中文黑体在浏览器里能明显分辨的只有这几档，
+ * 再多会落到同一条字形上，看起来像没生效。
+ */
+function setFont(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  weight: number,
+  block: PosterBlockDto,
+): void {
+  ctx.font = px(size, block.fontWeight ?? weight);
+  /**
+   * 字间距用 canvas 的 letterSpacing（Chrome 99+ / Safari 17+ 支持）。
+   * 不支持的浏览器会静默忽略——比手工逐字绘制稳，后者会把
+   * 中文的连字与英文的 kerning 全丢掉。
+   */
+  const spacing = block.letterSpacing ?? 0;
+  (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+    spacing === 0 ? '0px' : `${spacing}px`;
+}
+
+/** 行高：区块给了百分比就按百分比，否则用调用方给的默认倍数 */
+function lineHeightOf(block: PosterBlockDto, size: number, fallbackRatio: number): number {
+  const ratio = block.lineHeightPct == null ? fallbackRatio : block.lineHeightPct / 100;
+  return Math.round(size * ratio);
+}
+
+/** 文字投影与描边：投影默认开、描边默认关（描边要配色，不能凭空给） */
+function applyTextEffects(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
+  if (block.shadow) {
+    ctx.shadowColor = pal.textShadow;
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 3;
+  }
+  const sw = block.strokeWidth ?? 0;
+  if (sw > 0) {
+    ctx.strokeStyle = block.strokeColor || pal.bg;
+    ctx.lineWidth = sw * 2; // 描边是内外各一半，×2 才等于视觉上的外扩量
+    ctx.lineJoin = 'round';
+  }
+}
+
+function clearTextEffects(ctx: CanvasRenderingContext2D): void {
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'transparent';
+}
+
+/**
+ * 画文字（可选描边）。
+ *
+ * 描边必须先 stroke 再 fill：先填后描会把字形内部削细一圈，
+ * 中文小字尤其明显（看起来像变细了而不是加了边）。
+ */
+function paintText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  block: PosterBlockDto,
+): void {
+  if ((block.strokeWidth ?? 0) > 0) ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
+}
+
+/**
+ * 文字底板（胶囊色块）。
+ *
+ * 位置由调用方按「文字实际占的框」给出，不在这里猜度量——
+ * 每个绘制函数的基线规则都不同，统一按区块矩形铺底会盖住相邻内容。
+ */
+function paintTextBg(
+  ctx: CanvasRenderingContext2D,
+  block: PosterBlockDto,
+  box: { x: number; y: number; w: number; h: number },
+  radius = 8,
+): void {
+  const bg = block.bgColor;
+  if (!bg) return;
+  ctx.save();
+  ctx.fillStyle = bg;
+  roundRect(ctx, box.x, box.y, box.w, box.h, radius);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * 逐字绘制以实现字间距。
+ *
+ * canvas 的 letterSpacing 在部分浏览器上仍不可用，这里在**明确设了字间距**时
+ * 兜底自己排：只影响间距，不影响字形。返回值是这段文字的总宽度，
+ * 供调用方做居中/右对齐。
+ */
+function trackedWidth(ctx: CanvasRenderingContext2D, text: string, block: PosterBlockDto): number {
+  const spacing = block.letterSpacing ?? 0;
+  if (!spacing) return ctx.measureText(text).width;
+  let w = 0;
+  for (const ch of text) w += ctx.measureText(ch).width + spacing;
+  return Math.max(0, w - spacing);
+}
+
+/** 画一行带字间距的文字；align 决定 x 是左端、中点还是右端 */
+function fillTracked(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  block: PosterBlockDto,
+  align: CanvasTextAlign = 'left',
+): void {
+  const spacing = block.letterSpacing ?? 0;
+  if (!spacing) {
+    const prev = ctx.textAlign;
+    ctx.textAlign = align;
+    paintText(ctx, text, x, y, block);
+    ctx.textAlign = prev;
+    return;
+  }
+  const total = trackedWidth(ctx, text, block);
+  let cursor = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+  const prev = ctx.textAlign;
+  ctx.textAlign = 'left';
+  for (const ch of text) {
+    paintText(ctx, ch, cursor, y, block);
+    cursor += ctx.measureText(ch).width + spacing;
+  }
+  ctx.textAlign = prev;
+}
+
 function roundRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -214,8 +351,7 @@ function roundRect(
  * 因此这里刻意使用人民币符号，与站内的积分口径**故意不同**。
  * 站内所有页面仍然只显示积分，不受此处影响。
  */
-function money(cent: number): string {
-  const value = cent / 100;
+function money(cent: number): string {  const value = cent / 100;
   const text = Number.isInteger(value) ? String(value) : value.toFixed(2);
   return `¥${text}`;
 }
@@ -554,9 +690,12 @@ function drawTitleIn(
   let lines: string[] = [];
   let fallback: { size: number; lines: [string, string] } | null = null;
 
+  // 局部行高倍数：标题比正文紧一点，视觉上才像「大标题」
+  const titleLineHeight = (s: number): number => lineHeightOf(block, s, 1.26);
+
   for (const candidate of TITLE_SIZES) {
     if (block.fontSize) break; // 手动指定字号时不做自适应
-    ctx.font = px(candidate, 800);
+    setFont(ctx, candidate, 800, block);
     if (ctx.measureText(content).width <= maxW) {
       size = candidate;
       lines = [content];
@@ -576,7 +715,7 @@ function drawTitleIn(
 
   if (block.fontSize) {
     size = block.fontSize;
-    ctx.font = px(size, 800);
+    setFont(ctx, size, 800, block);
     lines = [];
   }
 
@@ -586,7 +725,7 @@ function drawTitleIn(
       lines = fallback.lines;
     } else {
       size = Math.min(block.fontSize ?? 36, 36);
-      ctx.font = px(size, 800);
+      setFont(ctx, size, 800, block);
       lines = wrapText(ctx, content, maxW, maxLines);
     }
   }
@@ -597,12 +736,11 @@ function drawTitleIn(
    * 这里从已选字号往下退，直到「行数 × 行高 ≤ 可用高度」。
    */
   const availH = Math.max(1, block.h);
-  const lineHeightOf = (s: number): number => Math.round(s * 1.26);
-  while (size > 20 && lines.length * lineHeightOf(size) > availH) {
+  while (size > 20 && lines.length * titleLineHeight(size) > availH) {
     size -= 2;
-    ctx.font = px(size, 800);
+    setFont(ctx, size, 800, block);
     // 只保留仍能放下的行数，避免退字号后行宽又不合适
-    const maxFit = Math.max(1, Math.floor(availH / lineHeightOf(size)));
+    const maxFit = Math.max(1, Math.floor(availH / titleLineHeight(size)));
     if (lines.length > maxFit) {
       lines = lines.slice(0, maxFit);
       const last = lines[lines.length - 1] ?? '';
@@ -614,25 +752,41 @@ function drawTitleIn(
     }
   }
 
-  ctx.font = px(size, 800);
+  setFont(ctx, size, 800, block);
   ctx.fillStyle = block.color || pal.text;
-  ctx.textAlign = align;
   ctx.textBaseline = 'alphabetic';
-  ctx.shadowColor = pal.textShadow;
-  ctx.shadowBlur = 24;
-  ctx.shadowOffsetY = 4;
+  applyTextEffects(ctx, block, pal);
+  // 标题默认带一层更重的投影：海报大面积深色底，没有投影字会糊进背景
+  if (block.shadow) {
+    ctx.shadowColor = pal.textShadow;
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 4;
+  }
 
-  const lineHeight = lineHeightOf(size);
+  const lineHeight = titleLineHeight(size);
   // 最后一行贴区块底边，向上堆叠
   const lastBaseline = block.y + block.h;
   const ax = align === 'center' ? block.x + block.w / 2 : align === 'right' ? block.x + block.w : block.x;
+
+  if (block.bgColor) {
+    paintTextBg(
+      ctx,
+      block,
+      {
+        x: block.x - 8,
+        y: lastBaseline - (lines.length - 1) * lineHeight - Math.round(size * 0.86) - 10,
+        w: block.w + 16,
+        h: (lines.length - 1) * lineHeight + Math.round(size * 1.18) + 20,
+      },
+      12,
+    );
+  }
+
   lines.forEach((line, i) => {
-    ctx.fillText(line, ax, lastBaseline - (lines.length - 1 - i) * lineHeight);
+    fillTracked(ctx, line, ax, lastBaseline - (lines.length - 1 - i) * lineHeight, block, align);
   });
 
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
+  clearTextEffects(ctx);
 }
 
 /* ==================================================================== */
@@ -650,10 +804,12 @@ function drawBrandBlock(
   ctx.fillStyle = block.color || pal.accent;
   ctx.fillRect(block.x, block.y + 10, 6, 34);
 
+  const size = block.fontSize ?? 28;
+  setFont(ctx, size, block.fontWeight ?? 600, block);
   ctx.fillStyle = pal.strong;
-  ctx.font = px(block.fontSize ?? 28, 600);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
+  applyTextEffects(ctx, block, pal);
 
   let label = text;
   const maxW = block.w - 20;
@@ -661,7 +817,9 @@ function drawBrandBlock(
     while (label && ctx.measureText(`${label}…`).width > maxW) label = label.slice(0, -1);
     label = `${label}…`;
   }
-  ctx.fillText(label, block.x + 20, block.y + 38);
+  paintTextBg(ctx, block, { x: block.x + 8, y: block.y + 2, w: Math.min(block.w, ctx.measureText(label).width + 32), h: 48 }, 12);
+  fillTracked(ctx, label, block.x + 20, block.y + 38, block);
+  clearTextEffects(ctx);
 }
 
 /**
@@ -692,28 +850,53 @@ function drawIntroBlock(
 
   const top = block.y + 26;
   const needTwo = Boolean(subtitle) && Boolean(detail);
+  const lineGap = lineHeightOf(block, block.fontSize ?? 26, 1.3);
 
   if (needTwo && block.h >= 72) {
     // 两行都放得下：副标题一行 + 明细一行
+    const subSize = block.fontSize ?? 28;
+    setFont(ctx, subSize, 500, block);
     ctx.fillStyle = block.color || pal.strong;
-    ctx.font = px(block.fontSize ?? 28, 500);
-    ctx.textAlign = align;
-    ctx.fillText(wrapText(ctx, subtitle, block.w, 1)[0] ?? '', ax, top);
+    const subLine = wrapText(ctx, subtitle, block.w, 1)[0] ?? '';
+    applyTextEffects(ctx, block, pal);
+    if (block.bgColor) {
+      const w = Math.min(block.w, trackedWidth(ctx, subLine, block));
+      paintTextBg(
+        ctx,
+        block,
+        { x: align === 'center' ? ax - w / 2 - 12 : align === 'right' ? ax - w - 12 : ax - 12, y: top - Math.round(subSize * 0.9), w: w + 24, h: Math.round(subSize * 1.5) },
+        8,
+      );
+    }
+    fillTracked(ctx, subLine, ax, top, block, align);
+    clearTextEffects(ctx);
 
+    setFont(ctx, 24, 400, block);
     ctx.fillStyle = pal.muted;
-    ctx.font = px(24, 400);
-    ctx.textAlign = align;
-    ctx.fillText(wrapText(ctx, detail, block.w, 1)[0] ?? '', ax, top + 34);
+    const detailLine = wrapText(ctx, detail, block.w, 1)[0] ?? '';
+    fillTracked(ctx, detailLine, ax, top + Math.max(lineGap, 34), block, align);
     return;
   }
 
   // 高度不够两行：优先展示信息量更大的那一行（有明细就放弃副标题）
   const single = detail || subtitle;
   if (!single) return;
+  const singleSize = block.fontSize ?? (detail ? 26 : 26);
+  setFont(ctx, singleSize, detail ? 400 : 500, block);
   ctx.fillStyle = detail ? pal.muted : (block.color || pal.strong);
-  ctx.font = px(block.fontSize ?? 26, detail ? 400 : 500);
-  ctx.textAlign = align;
-  ctx.fillText(wrapText(ctx, single, block.w, 1)[0] ?? '', ax, top);
+  const line = wrapText(ctx, single, block.w, 1)[0] ?? '';
+  applyTextEffects(ctx, block, pal);
+  if (block.bgColor) {
+    const w = Math.min(block.w, trackedWidth(ctx, line, block));
+    paintTextBg(
+      ctx,
+      block,
+      { x: align === 'center' ? ax - w / 2 - 12 : align === 'right' ? ax - w - 12 : ax - 12, y: top - Math.round(singleSize * 0.9), w: w + 24, h: Math.round(singleSize * 1.5) },
+      8,
+    );
+  }
+  fillTracked(ctx, line, ax, top, block, align);
+  clearTextEffects(ctx);
 }
 
 function drawDividerBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal: PosterPalette): void {
@@ -917,10 +1100,22 @@ function drawFooterBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, p
   const align = (block.align ?? 'left') as CanvasTextAlign;
   const ax = align === 'center' ? block.x + block.w / 2 : align === 'right' ? block.x + block.w : block.x;
 
-  ctx.textAlign = align;
+  const size = block.fontSize ?? 21;
+  setFont(ctx, size, 400, block);
   ctx.fillStyle = block.color || pal.faint;
-  ctx.font = px(block.fontSize ?? 21, 400);
-  ctx.fillText(wrapText(ctx, text, block.w, 1)[0] ?? '', ax, block.y + 24);
+  applyTextEffects(ctx, block, pal);
+  const line = wrapText(ctx, text, block.w, 1)[0] ?? '';
+  if (block.bgColor) {
+    const w = Math.min(block.w, trackedWidth(ctx, line, block));
+    paintTextBg(
+      ctx,
+      block,
+      { x: align === 'center' ? ax - w / 2 - 10 : align === 'right' ? ax - w - 10 : ax - 10, y: block.y + 2, w: w + 20, h: Math.round(size * 1.6) },
+      6,
+    );
+  }
+  fillTracked(ctx, line, ax, block.y + 24, block, align);
+  clearTextEffects(ctx);
   ctx.textAlign = 'left';
 }
 
@@ -931,22 +1126,33 @@ function drawTextBlock(ctx: CanvasRenderingContext2D, block: PosterBlockDto, pal
   const ax = align === 'center' ? block.x + block.w / 2 : align === 'right' ? block.x + block.w : block.x;
 
   const size = block.fontSize ?? 30;
-  ctx.font = px(size, 600);
+  setFont(ctx, size, 600, block);
   ctx.fillStyle = block.color || pal.text;
-  ctx.textAlign = align;
-  const lineHeight = Math.round(size * 1.34);
+  const lineHeight = lineHeightOf(block, size, 1.34);
   const maxLines = Math.max(1, Math.floor(block.h / lineHeight));
   const lines = wrapText(ctx, text, block.w, maxLines);
 
-  ctx.shadowColor = pal.textShadow;
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 3;
+  applyTextEffects(ctx, block, pal);
+  if (block.bgColor && lines.length) {
+    const widest = Math.max(...lines.map((l) => trackedWidth(ctx, l, block)));
+    const w = Math.min(block.w, widest);
+    const blockH = lines.length * lineHeight + Math.round(size * 0.5);
+    paintTextBg(
+      ctx,
+      block,
+      {
+        x: align === 'center' ? ax - w / 2 - 12 : align === 'right' ? ax - w - 12 : ax - 12,
+        y: block.y + Math.round(size * 0.1),
+        w: w + 24,
+        h: blockH,
+      },
+      10,
+    );
+  }
   lines.forEach((line, i) => {
-    ctx.fillText(line, ax, block.y + size + i * lineHeight);
+    fillTracked(ctx, line, ax, block.y + size + i * lineHeight, block, align);
   });
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
+  clearTextEffects(ctx);
   ctx.textAlign = 'left';
 }
 
@@ -1142,6 +1348,23 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
     const align = (block.align ?? 'left') as CanvasTextAlign;
 
     /**
+     * 旋转：围绕区块中心转，转的是整块内容（图、文字、二维码一视同仁）。
+     *
+     * 必须**先旋转再裁剪**：clip 的矩形是在当前变换下取的，
+     * 顺序反过来会裁出一个不跟着转的矩形，斜着的文字被切掉一条边。
+     */
+    const rotation = block.rotation ?? 0;
+    const rotated = rotation !== 0;
+    if (rotated) {
+      const cx = block.x + block.w / 2;
+      const cy = block.y + block.h / 2;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.translate(-cx, -cy);
+    }
+
+    /**
      * 兜底裁剪：文字类区块只允许在自己的矩形里作画。
      *
      * 设计器里区块高度是随手拖的，靠每类绘制函数自己「尽量不越界」不够保险
@@ -1227,6 +1450,7 @@ export async function renderPoster(input: PosterRenderInput): Promise<HTMLCanvas
     }
 
     if (clipped) ctx.restore();
+    if (rotated) ctx.restore();
   }
 
   // 报告本次实际跳过的区块，供设计器让「点击层」与画面保持一致

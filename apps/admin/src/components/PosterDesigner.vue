@@ -3,7 +3,7 @@
  * 海报设计器：低代码拖拽排版 + 配色主题。
  *
  * 左侧 = 画布（1080×1620 等比缩放到容器里，鼠标事件换算回画布像素）；
- * 右侧 = 配色 / 区块图层 / 选中区块属性 / 添加区块。
+ * 左栏 = 配色 / 区块图层，中栏 = 画布，右栏 = 选中区块属性 / 添加区块。
  *
  * 交互约定：
  * · 拖区块本体 = 移动；拖四角 = 缩放；方向键微调，Shift 加速；
@@ -78,13 +78,19 @@ const stageViewportEl = ref<HTMLDivElement | null>(null);
 const stageEl = ref<HTMLDivElement | null>(null);
 
 /**
- * 「100%」的基准宽 = min(容器宽, 按视口高反推的宽)。
+ * 「100%」的基准宽 = min(容器宽, 按视口可高反推的宽)。
  *
  * 竖图 1080:1620，只按容器宽铺满会高过弹窗，底部价格与页脚永远要滚动才看得到。
- * 与 CSS 里那条 max-width 是同一条算式，这里显式算出来，缩放才有稳定基准。
+ * 与 CSS 里 `--pd-pane-h` 那条是同一条算式，这里显式算出来，缩放才有稳定基准。
+ *
+ * 260 是画布栏里画布以外的开销（顶部工具条 + 画布控制条 + 快捷键说明 + 弹窗上下留白）。
+ * 改成三栏后左右栏各自限高，画布若还按整屏高换算就会比左右栏高出一截，
+ * 弹窗又冒出滚动条——所以这里必须跟 CSS 的 `--pd-pane-h` 对齐口径。
  */
+const PANE_CHROME = 348;
+
 const fitW = computed(() => {
-  const byHeight = Math.max(200, (viewportH.value - 260) * (CANVAS_W / CANVAS_H));
+  const byHeight = Math.max(200, (viewportH.value - PANE_CHROME) * (CANVAS_W / CANVAS_H));
   return Math.max(160, Math.min(baseW.value, byHeight));
 });
 
@@ -472,6 +478,16 @@ function beginDrag(ev: PointerEvent, block: PosterBlockDto, mode: DragMode): voi
     return;
   }
 
+  /**
+   * 锁定区块不参与拖动与缩放。
+   * 只拦「几何变更」，不拦选中：锁上之后还要能点开右侧面板解锁、改文字改颜色。
+   */
+  if (block.locked) {
+    if (mode !== 'move') return;
+    selectOnly(block.id);
+    return;
+  }
+
   // 拖到的块不在当前多选里 → 收成单选；在多选里 → 整组一起移动
   if (!multiSelected.value.has(block.id)) selectOnly(block.id);
   else selectedId.value = block.id;
@@ -479,8 +495,9 @@ function beginDrag(ev: PointerEvent, block: PosterBlockDto, mode: DragMode): voi
   // 连续操作只记一次快照：一次拖动不该产生上百条历史
   pushHistory();
 
+  // 整组拖动时跳过锁定块：锁定就是「别动我」，多选也不该把它带走
   const group = mode === 'move' && multiSelected.value.size > 1
-    ? layout.value.blocks.filter((b) => multiSelected.value.has(b.id))
+    ? layout.value.blocks.filter((b) => multiSelected.value.has(b.id) && !b.locked)
     : [block];
 
   drag.value = {
@@ -755,6 +772,17 @@ function addBlock(type: PosterBlockType): void {
          * 其余区块沿用预设里的取值（一般为 0）。
          */
         modelIndex: found?.modelIndex ?? (type === 'wardrobe2' || type === 'stage2' ? 1 : 0),
+        // 排版与效果一律用中性默认值：新加进来的区块与预设区块长得一样，
+        // 用户想调再去右侧面板改，不要让「加一个文字」自带旋转或描边。
+        rotation: 0,
+        fontWeight: null,
+        letterSpacing: null,
+        lineHeightPct: null,
+        shadow: true,
+        strokeColor: null,
+        strokeWidth: 0,
+        bgColor: null,
+        locked: false,
       };
 
   // 自定义文字块自带文案，但要让它落在现有内容之下，避免盖住标题
@@ -856,8 +884,19 @@ function pasteClipboard(): void {
 }
 
 /** 方向键微调：整组一起动，只记一条历史 */
+/**
+ * 锁定的区块不参与任何几何变更。
+ *
+ * 对齐 / 分布 / 微调都是「一键改一批」，如果连锁定块也一起挪，
+ * 用户精心定位好的 LOGO 会被一次「全选 + 左对齐」推走，而且很难发现。
+ */
+function editableOf(blocks: PosterBlockDto[]): PosterBlockDto[] {
+  return blocks.filter((b) => !b.locked);
+}
+
 function nudgeSelection(dx: number, dy: number): void {
-  const targets = selectedBlocks.value.length ? selectedBlocks.value : (selected.value ? [selected.value] : []);
+  const raw = selectedBlocks.value.length ? selectedBlocks.value : (selected.value ? [selected.value] : []);
+  const targets = editableOf(raw);
   if (!targets.length) return;
   pushHistory();
   for (const b of targets) { b.x += dx; b.y += dy; }
@@ -918,8 +957,12 @@ type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
  * 多选对齐外接矩形则符合 Figma / Canva 的直觉。
  */
 function alignSelection(mode: AlignMode): void {
-  const targets = selectedBlocks.value.length ? selectedBlocks.value : (selected.value ? [selected.value] : []);
-  if (!targets.length) return;
+  const raw = selectedBlocks.value.length ? selectedBlocks.value : (selected.value ? [selected.value] : []);
+  const targets = editableOf(raw);
+  if (!targets.length) {
+    if (raw.length) ElMessage.info('选中的区块已锁定，先解锁再对齐');
+    return;
+  }
   pushHistory();
 
   const useCanvas = targets.length === 1;
@@ -945,9 +988,9 @@ function alignSelection(mode: AlignMode): void {
  * 至少要 3 块才有意义（2 块谈不上分布）。
  */
 function distributeSelection(axis: 'h' | 'v'): void {
-  const targets = selectedBlocks.value;
+  const targets = editableOf(selectedBlocks.value);
   if (targets.length < 3) {
-    ElMessage.info('等间距分布需要选中至少 3 个区块');
+    ElMessage.info('等间距分布需要选中至少 3 个未锁定的区块');
     return;
   }
   pushHistory();
@@ -971,13 +1014,21 @@ function distributeSelection(axis: 'h' | 'v'): void {
 /** 统一尺寸：把选区里其它区块的宽/高/两者对齐到主选中块 */
 function matchSize(mode: 'w' | 'h' | 'both'): void {
   const main = selected.value;
-  const targets = selectedBlocks.value.filter((b) => b.id !== main?.id);
+  const targets = editableOf(selectedBlocks.value.filter((b) => b.id !== main?.id));
   if (!main || !targets.length) return;
   pushHistory();
   for (const b of targets) {
     if (mode === 'w' || mode === 'both') b.w = main.w;
     if (mode === 'h' || mode === 'both') b.h = main.h;
   }
+}
+
+/** 锁定/解锁：只切换标记，不动几何；导出时 locked 不影响绘制 */
+function toggleLock(id: string): void {
+  const b = layout.value.blocks.find((x) => x.id === id);
+  if (!b) return;
+  pushHistory();
+  b.locked = !b.locked;
 }
 
 /* ---------------- 版式操作 ---------------- */
@@ -1160,7 +1211,7 @@ const showGrid = ref(false);
 /**
  * 缩放 = 直接改 stage 的宽度上限。
  *
- * CSS 里那条 `max-width: calc((100vh - 300px) * 0.6667)` 是「100% 时整张一屏可见」
+ * CSS 里那条 `max-width: calc(var(--pd-pane-h) * 0.6667)` 是「100% 时整张一屏可见」
  * 的基准；放大时必须用行内 max-width 覆盖它，否则 stage 变宽了画布仍被卡住，
  * 表现就是「点了 + 号没反应」。
  * 不用 transform: scale —— 那会把 canvas 位图一起缩放，放大后字会糊。
@@ -1298,9 +1349,156 @@ function labelOf(type: PosterBlockType): string {
 
     <div v-if="loading" class="py-16 text-center text-sm text-slate-500">加载版式中…</div>
 
-    <div v-else class="flex flex-col gap-4 lg:flex-row">
-      <!-- 画布 -->
-      <div class="min-w-0 flex-1">
+    <div v-else class="pd-workbench">
+      <!-- 左栏：配色 + 图层（原来都在右侧，堆成一长列才出现滚动条） -->
+      <aside class="pd-pane pd-pane-left">
+        <!-- 配色主题：色卡一键切换 + 三色微调 -->
+        <el-card shadow="never" class="mb-3 pd-card">
+          <template #header>
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-slate-800">配色方案</span>
+              <el-button size="small" text @click="resetTheme">恢复默认</el-button>
+            </div>
+          </template>
+
+          <div class="grid grid-cols-3 gap-2">
+            <button
+              v-for="t in THEME_LIST"
+              :key="t.key"
+              type="button"
+              class="pd-swatch"
+              :class="{ 'is-active': activeThemeKey === t.key }"
+              :title="t.hint"
+              @click="applyTheme(t.key)"
+            >
+              <span class="pd-swatch-art" :style="{ background: t.bg }">
+                <span class="pd-swatch-bar" :style="{ background: t.accent }" />
+                <span class="pd-swatch-line" :style="{ background: t.text }" />
+                <span class="pd-swatch-line short" :style="{ background: t.text, opacity: 0.55 }" />
+                <span class="pd-swatch-dot" :style="{ background: t.accent }" />
+              </span>
+              <span class="pd-swatch-name">{{ t.label }}</span>
+            </button>
+          </div>
+
+          <p class="mt-2 text-[11px] leading-5 text-slate-500">
+            {{ activeThemeKey ? THEME_LIST.find(t => t.key === activeThemeKey)?.hint : '自定义配色：三个颜色可分别微调' }}
+          </p>
+
+          <el-divider class="!my-3" />
+
+          <div class="space-y-2">
+            <div class="pd-colorrow">
+              <span class="pd-colorname">底色</span>
+              <el-color-picker
+                :model-value="theme.bg"
+                size="small"
+                :predefine="['#080a0e', '#0c0a09', '#f6f4ef', '#071310', '#0d0a1a', '#061019']"
+                @update:model-value="(v: string | null) => setThemeColor('bg', v)"
+              />
+              <code class="pd-colorcode">{{ theme.bg }}</code>
+            </div>
+            <div class="pd-colorrow">
+              <span class="pd-colorname">主色</span>
+              <el-color-picker
+                :model-value="theme.accent"
+                size="small"
+                :predefine="['#f43f5e', '#d4a537', '#dc2626', '#34d399', '#a78bfa', '#38bdf8', '#fb923c', '#22d3ee']"
+                @update:model-value="(v: string | null) => setThemeColor('accent', v)"
+              />
+              <code class="pd-colorcode">{{ theme.accent }}</code>
+            </div>
+            <div class="pd-colorrow">
+              <span class="pd-colorname">正文</span>
+              <el-color-picker
+                :model-value="theme.text"
+                size="small"
+                :predefine="['#ffffff', '#faf7f0', '#1c1917', '#f0fdf4', '#f5f3ff', '#f0f9ff', '#0f172a']"
+                @update:model-value="(v: string | null) => setThemeColor('text', v)"
+              />
+              <code class="pd-colorcode">{{ theme.text }}</code>
+            </div>
+          </div>
+          <p class="mt-2 text-[11px] leading-5 text-slate-500">
+            次要文字、三档价格、图片蒙层与描边都由这三个色自动派生；
+            浅色底会自动改用深色文字与提亮蒙层，不会出现「白底白字」。
+          </p>
+        </el-card>
+
+        <el-card shadow="never" class="mb-3 pd-card">
+          <template #header>
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-slate-800">区块图层</span>
+              <div class="flex items-center gap-2">
+                <el-button size="small" text @click="selectAll">全选</el-button>
+                <span class="text-[11px] text-slate-400">{{ layout.blocks.length }} 个</span>
+              </div>
+            </div>
+          </template>
+          <div class="pd-layers max-h-[240px] space-y-1 overflow-y-auto pr-1">
+            <div
+              v-for="(b, i) in orderedBlocks"
+              :key="b.id"
+              class="pd-layer"
+              :class="{
+                'is-main': b.id === selectedId,
+                'is-multi': multiSelected.has(b.id) && b.id !== selectedId,
+              }"
+              @click="($event.shiftKey ? toggleSelect(b.id) : selectOnly(b.id))"
+            >
+              <el-checkbox
+                :model-value="b.visible"
+                size="small"
+                @click.stop
+                @change="(v: any) => { pushHistory(); b.visible = Boolean(v); }"
+              />
+              <span class="min-w-0 flex-1 truncate text-slate-700">{{ labelOf(b.type) }}</span>
+              <!--
+                锁图标直接放在图层行里：想解某个被锁的区块时，
+                如果还得先选中再翻到右栏找开关，等于把「防误拖」变成了「难解锁」。
+              -->
+              <button
+                v-if="b.locked"
+                class="pd-lock is-on"
+                type="button"
+                title="已锁定位置，点击解锁"
+                @click.stop="toggleLock(b.id)"
+              >🔒</button>
+              <button
+                v-else
+                class="pd-lock"
+                type="button"
+                title="锁定位置（防误拖）"
+                @click.stop="toggleLock(b.id)"
+              >🔓</button>
+              <span class="shrink-0 text-[10px] text-slate-400">z{{ b.z }}</span>
+              <span class="flex shrink-0 flex-col">
+                <button
+                  class="pd-layerbtn"
+                  type="button"
+                  title="上移一层"
+                  :disabled="i === orderedBlocks.length - 1"
+                  @click.stop="moveLayer(b.id, 1)"
+                >▲</button>
+                <button
+                  class="pd-layerbtn"
+                  type="button"
+                  title="下移一层"
+                  :disabled="i === 0"
+                  @click.stop="moveLayer(b.id, -1)"
+                >▼</button>
+              </span>
+            </div>
+          </div>
+          <p class="mt-2 text-[11px] leading-5 text-slate-500">
+            列表自下而上就是叠放顺序；勾选框控制该区块是否出现在海报上。
+          </p>
+        </el-card>
+
+      </aside>
+
+      <!-- 中栏：画布 -->
+      <div class="pd-pane pd-pane-center min-w-0">
         <!-- 画布显示控制条：缩放 / 参考线 / 网格 / 选区操作 -->
         <div class="pd-canvasbar mb-2">
           <div class="flex items-center gap-1">
@@ -1382,6 +1580,7 @@ function labelOf(type: PosterBlockType): string {
                     'is-selected': b.id === selectedId,
                     'is-multi': multiSelected.has(b.id) && b.id !== selectedId,
                     'is-hidden': !b.visible,
+                    'is-locked': b.locked,
                     'is-skipped': skippedInRender.has(b.id),
                   }"
                   :style="boxStyle(b)"
@@ -1390,6 +1589,7 @@ function labelOf(type: PosterBlockType): string {
                 >
                   <span class="poster-hotspot-label">
                     {{ labelOf(b.type) }}<template v-if="skippedInRender.has(b.id)">（本场不显示）</template>
+                    <template v-if="b.locked"> 🔒</template>
                   </span>
                   <template v-if="b.id === selectedId">
                     <span class="poster-handle nw" @pointerdown="beginDrag($event, b, 'resize-nw')" />
@@ -1421,81 +1621,8 @@ function labelOf(type: PosterBlockType): string {
         </p>
       </div>
 
-      <!-- 右侧面板 -->
-      <div class="w-full shrink-0 lg:w-[336px]">
-        <!-- 配色主题：色卡一键切换 + 三色微调 -->
-        <el-card shadow="never" class="mb-3 pd-card">
-          <template #header>
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-800">配色方案</span>
-              <el-button size="small" text @click="resetTheme">恢复默认</el-button>
-            </div>
-          </template>
-
-          <div class="grid grid-cols-3 gap-2">
-            <button
-              v-for="t in THEME_LIST"
-              :key="t.key"
-              type="button"
-              class="pd-swatch"
-              :class="{ 'is-active': activeThemeKey === t.key }"
-              :title="t.hint"
-              @click="applyTheme(t.key)"
-            >
-              <span class="pd-swatch-art" :style="{ background: t.bg }">
-                <span class="pd-swatch-bar" :style="{ background: t.accent }" />
-                <span class="pd-swatch-line" :style="{ background: t.text }" />
-                <span class="pd-swatch-line short" :style="{ background: t.text, opacity: 0.55 }" />
-                <span class="pd-swatch-dot" :style="{ background: t.accent }" />
-              </span>
-              <span class="pd-swatch-name">{{ t.label }}</span>
-            </button>
-          </div>
-
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            {{ activeThemeKey ? THEME_LIST.find(t => t.key === activeThemeKey)?.hint : '自定义配色：三个颜色可分别微调' }}
-          </p>
-
-          <el-divider class="!my-3" />
-
-          <div class="space-y-2">
-            <div class="pd-colorrow">
-              <span class="pd-colorname">底色</span>
-              <el-color-picker
-                :model-value="theme.bg"
-                size="small"
-                :predefine="['#080a0e', '#0c0a09', '#f6f4ef', '#071310', '#0d0a1a', '#061019']"
-                @update:model-value="(v: string | null) => setThemeColor('bg', v)"
-              />
-              <code class="pd-colorcode">{{ theme.bg }}</code>
-            </div>
-            <div class="pd-colorrow">
-              <span class="pd-colorname">主色</span>
-              <el-color-picker
-                :model-value="theme.accent"
-                size="small"
-                :predefine="['#f43f5e', '#d4a537', '#dc2626', '#34d399', '#a78bfa', '#38bdf8', '#fb923c', '#22d3ee']"
-                @update:model-value="(v: string | null) => setThemeColor('accent', v)"
-              />
-              <code class="pd-colorcode">{{ theme.accent }}</code>
-            </div>
-            <div class="pd-colorrow">
-              <span class="pd-colorname">正文</span>
-              <el-color-picker
-                :model-value="theme.text"
-                size="small"
-                :predefine="['#ffffff', '#faf7f0', '#1c1917', '#f0fdf4', '#f5f3ff', '#f0f9ff', '#0f172a']"
-                @update:model-value="(v: string | null) => setThemeColor('text', v)"
-              />
-              <code class="pd-colorcode">{{ theme.text }}</code>
-            </div>
-          </div>
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            次要文字、三档价格、图片蒙层与描边都由这三个色自动派生；
-            浅色底会自动改用深色文字与提亮蒙层，不会出现「白底白字」。
-          </p>
-        </el-card>
-
+      <!-- 右栏：选中区块的属性（窄屏时排到最后） -->
+      <aside class="pd-pane pd-pane-right">
         <!-- 多选对齐 / 分布 -->
         <el-card v-if="multiCount > 1" shadow="never" class="mb-3 pd-card">
           <template #header>
@@ -1521,58 +1648,6 @@ function labelOf(type: PosterBlockType): string {
           <p class="mt-2 text-[11px] leading-5 text-slate-500">
             多选以整组外接矩形为基准；「同宽/同高」以最后选中的区块为准。
             只选一个区块时，对齐按钮以整张画布为基准。
-          </p>
-        </el-card>
-
-        <el-card shadow="never" class="mb-3 pd-card">
-          <template #header>
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-800">区块图层</span>
-              <div class="flex items-center gap-2">
-                <el-button size="small" text @click="selectAll">全选</el-button>
-                <span class="text-[11px] text-slate-400">{{ layout.blocks.length }} 个</span>
-              </div>
-            </div>
-          </template>
-          <div class="pd-layers max-h-[240px] space-y-1 overflow-y-auto pr-1">
-            <div
-              v-for="(b, i) in orderedBlocks"
-              :key="b.id"
-              class="pd-layer"
-              :class="{
-                'is-main': b.id === selectedId,
-                'is-multi': multiSelected.has(b.id) && b.id !== selectedId,
-              }"
-              @click="($event.shiftKey ? toggleSelect(b.id) : selectOnly(b.id))"
-            >
-              <el-checkbox
-                :model-value="b.visible"
-                size="small"
-                @click.stop
-                @change="(v: any) => { pushHistory(); b.visible = Boolean(v); }"
-              />
-              <span class="min-w-0 flex-1 truncate text-slate-700">{{ labelOf(b.type) }}</span>
-              <span class="shrink-0 text-[10px] text-slate-400">z{{ b.z }}</span>
-              <span class="flex shrink-0 flex-col">
-                <button
-                  class="pd-layerbtn"
-                  type="button"
-                  title="上移一层"
-                  :disabled="i === orderedBlocks.length - 1"
-                  @click.stop="moveLayer(b.id, 1)"
-                >▲</button>
-                <button
-                  class="pd-layerbtn"
-                  type="button"
-                  title="下移一层"
-                  :disabled="i === 0"
-                  @click.stop="moveLayer(b.id, -1)"
-                >▼</button>
-              </span>
-            </div>
-          </div>
-          <p class="mt-2 text-[11px] leading-5 text-slate-500">
-            列表自下而上就是叠放顺序；勾选框控制该区块是否出现在海报上。
           </p>
         </el-card>
 
@@ -1609,6 +1684,14 @@ function labelOf(type: PosterBlockType): string {
           <div class="mt-1 flex gap-1">
             <el-button size="small" @click="toFront(selected.id)">置顶</el-button>
             <el-button size="small" @click="toBack(selected.id)">置底</el-button>
+            <el-button
+              size="small"
+              :type="selected.locked ? 'warning' : 'default'"
+              class="ml-auto"
+              @click="toggleLock(selected.id)"
+            >
+              {{ selected.locked ? '已锁定' : '锁定位置' }}
+            </el-button>
           </div>
 
           <!-- 文字类区块 -->
@@ -1648,6 +1731,95 @@ function labelOf(type: PosterBlockType): string {
             <el-form-item label="颜色" label-width="52px" class="!mb-2">
               <el-color-picker v-model="selected.color" size="small" />
               <span class="ml-2 text-[11px] text-slate-400">{{ selected.color || '跟随主题配色' }}</span>
+            </el-form-item>
+
+            <!--
+              排版四项：字重 / 字间距 / 行高 / 旋转。
+              都设成「留空 = 用渲染器的默认值」而不是写死一个数，
+              因为不同区块（大标题 vs 底部小字）的默认值本来就不同，
+              面板一打开就把默认值固化成具体数字，等于把渲染器的自适应废掉了。
+            -->
+            <el-divider class="!my-3">排版</el-divider>
+            <el-form-item label="字重" label-width="52px" class="!mb-2">
+              <el-radio-group v-model="selected.fontWeight" size="small">
+                <el-radio-button :value="null">默认</el-radio-button>
+                <el-radio-button :value="400">细</el-radio-button>
+                <el-radio-button :value="600">中</el-radio-button>
+                <el-radio-button :value="800">粗</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <div class="grid grid-cols-2 gap-2">
+              <el-form-item label="字距" label-width="52px" class="!mb-2">
+                <el-input-number
+                  v-model="selected.letterSpacing"
+                  :min="-6"
+                  :max="24"
+                  size="small"
+                  controls-position="right"
+                  placeholder="默认"
+                  class="w-full"
+                />
+              </el-form-item>
+              <el-form-item label="行高%" label-width="56px" class="!mb-2">
+                <el-input-number
+                  v-model="selected.lineHeightPct"
+                  :min="80"
+                  :max="260"
+                  :step="5"
+                  size="small"
+                  controls-position="right"
+                  placeholder="默认"
+                  class="w-full"
+                />
+              </el-form-item>
+            </div>
+            <el-form-item label="旋转" label-width="52px" class="!mb-2">
+              <div class="flex w-full items-center gap-2">
+                <el-slider
+                  v-model="selected.rotation"
+                  :min="-180"
+                  :max="180"
+                  :step="1"
+                  class="flex-1"
+                  :show-tooltip="false"
+                />
+                <el-input-number
+                  v-model="selected.rotation"
+                  :min="-180"
+                  :max="180"
+                  size="small"
+                  controls-position="right"
+                  class="!w-[92px]"
+                />
+              </div>
+            </el-form-item>
+
+            <!-- 文字效果三项：阴影 / 描边 / 底板 -->
+            <el-divider class="!my-3">效果</el-divider>
+            <el-form-item label="阴影" label-width="52px" class="!mb-2">
+              <el-switch v-model="selected.shadow" size="small" />
+              <span class="ml-2 text-[11px] text-slate-400">
+                {{ selected.shadow ? '深色描边底更清晰' : '关闭后文字更干净' }}
+              </span>
+            </el-form-item>
+            <div class="grid grid-cols-2 gap-2">
+              <el-form-item label="描边" label-width="52px" class="!mb-2">
+                <el-color-picker v-model="selected.strokeColor" size="small" />
+              </el-form-item>
+              <el-form-item label="宽度" label-width="52px" class="!mb-2">
+                <el-input-number
+                  v-model="selected.strokeWidth"
+                  :min="0"
+                  :max="12"
+                  size="small"
+                  controls-position="right"
+                  class="w-full"
+                />
+              </el-form-item>
+            </div>
+            <el-form-item label="底板" label-width="52px" class="!mb-0">
+              <el-color-picker v-model="selected.bgColor" size="small" />
+              <span class="ml-2 text-[11px] text-slate-400">{{ selected.bgColor || '无底色' }}</span>
             </el-form-item>
           </template>
 
@@ -1712,7 +1884,7 @@ function labelOf(type: PosterBlockType): string {
             所有区块都在画布上了；可以调出隐藏区块或添加自定义文字。
           </p>
         </el-card>
-      </div>
+      </aside>
     </div>
   </div>
 </template>
@@ -1902,6 +2074,72 @@ function labelOf(type: PosterBlockType): string {
   padding: 12px 14px;
 }
 
+/* ---------------- 三栏工作台 ----------------
+ * 原来所有面板都堆在画布右侧一列里，光是配色 + 图层 + 属性就超过一屏，
+ * 弹窗内必然出现整页滚动条——滚一下画布就看不见了。
+ *
+ * 现在改成：左栏配色/图层、中栏画布、右栏选中属性。
+ * 关键点是「每栏各自滚动」：三栏等高，画布居中不滚，
+ * 左右两栏自己 overflow-y:auto，滚到底也只在栏内滚，画布原地不动。
+ * ============================================================ */
+
+.pd-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/**
+ * 三栏的统一高度预算：画布高度与左右栏高度都从这里取，保证三者齐平。
+ *
+ * 340px 是弹窗自身的开销（4vh 上边距 + 标题栏 + 底部按钮栏 + 顶部工具条 + 画布控制条 + 快捷键说明）。
+ * 不留给它，画布按容纳宽度撑开后总高就会超出视口，弹窗又冒出整页滚动条。
+ * 上限 700px 是为了在超宽大屏上别把海报拉得过大。
+ */
+.poster-designer {
+  --pd-pane-h: min(700px, calc(100dvh - 340px));
+}
+.pd-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/**
+ * 窄屏（<1024px）单列堆叠时不要给面板限高：
+ * 手机上弹窗本身就是全屏滚动，再套一个内层滚动条会变成「滚不动」的套娃。
+ */
+@media (min-width: 1024px) {
+  .pd-workbench {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .pd-pane-left {
+    width: 268px;
+    flex: 0 0 268px;
+    max-height: var(--pd-pane-h);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+  }
+
+  .pd-pane-center {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .pd-pane-right {
+    width: 320px;
+    flex: 0 0 320px;
+    max-height: var(--pd-pane-h);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-left: 2px;
+  }
+}
+
 /* ---------------- 配色色卡 ---------------- */
 
 .pd-swatch {
@@ -2054,6 +2292,35 @@ function labelOf(type: PosterBlockType): string {
   cursor: default;
 }
 
+/** 锁定按钮：未锁时几乎不可见（避免干扰扫视），锁上后常亮琥珀 */
+.pd-lock {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 10px;
+  line-height: 18px;
+  opacity: 0.35;
+  cursor: pointer;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.pd-layer:hover .pd-lock {
+  opacity: 0.8;
+}
+
+.pd-lock:hover {
+  background: var(--pd-surface-2);
+  opacity: 1;
+}
+
+.pd-lock.is-on {
+  opacity: 1;
+  background: rgba(217, 119, 6, 0.12);
+}
+
 /**
  * 滚动条自绘：细、圆角、颜色取自面板调色板，hover 变主色。
  * Firefox 用 scrollbar-* 兜底（不支持 ::-webkit-scrollbar）。
@@ -2088,12 +2355,16 @@ function labelOf(type: PosterBlockType): string {
  * 否则「量宽 → 放大 → 再量到更大的宽」会形成正反馈把画布撑爆。
  */
 /**
- * 视口高度上限：与 `.poster-stage` 的 `max-width: calc((100vh - 300px) * 0.6667)`
- * 同一条算式，保证 100% 时整张海报一屏可见；放大后由视口出滚动条。
+ * 视口高度上限：与 `.poster-stage` 共用 `--pd-pane-h`。
+ *
+ * 早先这里写的是 `100vh - 260px`，而 stage 的宽度上限是 `(100vh - 300px) * 0.6667`，
+ * 两者差着 40px 的口径 —— 三栏模式下这会多出一条没意义的滚动条。
+ * 现在高度统一：阶段按 `--pd-pane-h * 0.6667` 定宽，视口按 `--pd-pane-h` 定高，
+ * 100% 时海报正好铺满、放大后才出滚动条。
  */
 .poster-viewport {
   overflow: auto;
-  max-height: calc(100vh - 260px);
+  max-height: var(--pd-pane-h);
   padding: 2px;
   border-radius: 14px;
   background: repeating-conic-gradient(#f1f3f8 0% 25%, #e9ecf3 0% 50%) 0 0 / 16px 16px;
@@ -2186,13 +2457,14 @@ function labelOf(type: PosterBlockType): string {
 .poster-stage {
   width: 100%;
   /**
-   * 让整张海报一屏放得下：按视口高度反推最大宽度，再居中。
+   * 让整张海报一屏放得下：按**三栏公用高度预算**反推最大宽度，再居中。
    *
-   * 预览是 1080:1620 的竖图，按容器宽度铺满时整幅图会高过弹窗，
-   * 底部文案区（价格、页脚）始终要滚动才能看到，排版时看不到全貌。
-   * 这里用 (视口高 - 上下留白) × (1080/1620) 作为宽度上限。
+   * 预览是 1080:1620 的竖图。早先这里写的是 `(100vh - 300px) * 0.6667`，
+   * 但那 300px 是「只有画布一栏」时代的估计；改成三栏后左右栏各自限高，
+   * 画布若仍按视口高换算就会比左右栏高出一截，把弹窗顶出滚动条。
+   * 改成跟 `--pd-pane-h` 同一个来源，三者天然齐平。
    */
-  max-width: calc((100vh - 300px) * 0.6667);
+  max-width: calc(var(--pd-pane-h) * 0.6667);
   margin-left: auto;
   margin-right: auto;
 }
@@ -2257,6 +2529,27 @@ function labelOf(type: PosterBlockType): string {
 
 .poster-hotspot.is-skipped .poster-hotspot-label {
   background: #94a3b8;
+}
+
+/**
+ * 锁定的区块：**框直接藏起来**（用户要的「隐藏已锁定区块的框，防误拖」）。
+ *
+ * 只剩透明命中区的原因：框画在那里就等于告诉用户「这块可以拖」，
+ * 一拖才发现拖不动，比没有框更让人困惑。想动它就在图层列表里解锁。
+ * 注意**不设 pointer-events:none** —— 还得能点它选中、改文字改颜色。
+ */
+.poster-hotspot.is-locked {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+
+.poster-hotspot.is-locked .poster-hotspot-label {
+  opacity: 0;
+}
+
+.poster-hotspot.is-locked .poster-handle {
+  opacity: 0;
 }
 
 /* 对齐辅助线 */
